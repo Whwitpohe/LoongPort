@@ -3045,6 +3045,7 @@
       "getKeys": "取得密鑰",
       "tierCount": "{{count}} 個方案",
       "dragHandle": "拖動排序",
+      "currentOperator": "目前營運商",
       "refetchGroups": "重新拉取可用群組",
       "purchaseHint": "點擊充值（在應用內開啟該站點的充值頁）",
       "lowBalanceHint": "餘額不足 ${{threshold}}，點擊充值",
@@ -3054,9 +3055,29 @@
       "removeConfirmMessage": "會刪掉「{{label}}」的登入狀態，連帶它已產生的 {{count}} 個方案。已充值的餘額留在營運商那邊，重新登入就能再用。",
       "removeConfirmMessageNeverLoggedIn": "會刪掉「{{label}}」這一行，連帶它已產生的 {{count}} 個方案。這個帳號從沒登入過，隨時可以重新新增。"
     },
+    "health": {
+      "title": "渠道健康",
+      "autoRefresh": "自動更新",
+      "group": "群組：{{name}}",
+      "responseLatency": "請求延遲",
+      "ping": "Ping",
+      "availability7d": "7 天可用率",
+      "recentChecks": "最近 {{count}} 次檢測",
+      "newestRight": "右側最新",
+      "status": {
+        "operational": "正常",
+        "degraded": "效能下降",
+        "failed": "故障",
+        "error": "異常",
+        "unknown": "未知"
+      }
+    },
     "tier": {
       "rateUnknown": "倍率未知",
       "rate": "{{value}} 倍",
+      "currentConfig": "目前設定",
+      "actualRate": "實際 {{value}} 倍",
+      "actualRateHint": "實際倍率 = 目前扣費倍率 ÷ 儲值到帳比例（不含手續費）",
       "switching": "切換中…",
       "checkConnectivity": "檢測連通",
       "resetConfig": "恢復預設設定",
@@ -3071,7 +3092,10 @@
       "userEdited": "已手動維護",
       "userEditedHint": "這個檔位的設定你改過。重新整理分組不會覆寫它（只更新金鑰）。點這裡恢復預設設定。",
       "editMissing": "這個檔位的記錄已經不在了，請點「取得金鑰」重新產生。",
-      "editCurrentNote": "這是目前正在使用的檔位。改完如果沒生效，結束並重新開啟 ChatGPT 桌面版 —— 它在執行時會把 codex 的設定改回去。"
+      "editCurrentNote": "這是目前正在使用的檔位。改完如果沒生效，結束並重新開啟 ChatGPT 桌面版 —— 它在執行時會把 codex 的設定改回去。",
+      "groupSelectHint": "選擇這條設定綁定的分組",
+      "groupRebound": "已改綁到「{{name}}」",
+      "refreshGroupsFirst": "請先重新整理檔位與金鑰"
     },
     "stats": {
       "title": "協助改進 LoongPort",

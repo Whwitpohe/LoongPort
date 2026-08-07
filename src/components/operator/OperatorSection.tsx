@@ -8,6 +8,8 @@ import { operatorApi, providersApi } from "@/lib/api";
 import { PURCHASE_CLOSED_EVENT } from "@/lib/api/operator";
 import type { AppId, ProviderSwitchEvent } from "@/lib/api";
 import type {
+  AvailableGroupInfo,
+  ChannelMonitorInfo,
   OperatorRow as OperatorRowData,
   ProvisionSummary,
   TierInfo,
@@ -27,12 +29,21 @@ import { AddSiteDialog } from "./AddSiteDialog";
 import { openInBrowser } from "./openInBrowser";
 import { ImageTabNotice } from "./ImageTabNotice";
 import { OperatorTierList } from "./OperatorTierList";
-import { balanceRowsKey, parseBalanceRowsKey } from "./balanceRowsKey";
+import { balanceRowsKey } from "./balanceRowsKey";
 import { sumTiersForApp } from "./provisionScope";
+import {
+  loadAvailableGroupCache,
+  mergeAvailableGroupRefreshes,
+  saveAvailableGroupCache,
+} from "./availableGroupCache";
+import { preserveUntouchedOperatorTierInfo } from "./preserveOperatorTierInfo";
 import { removeConfirmMessageKey } from "./removeConfirmWording";
 import { reportProvision } from "./reportProvision";
 import { type RowKey, rowKey } from "./rowKey";
 import { SwitchTierConfirmDialog } from "./SwitchTierConfirmDialog";
+import { useBalancePolling } from "./useBalancePolling";
+import { useChannelMonitorPolling } from "./useChannelMonitorPolling";
+import { filterChannelMonitorsByOperatorForApp } from "./channelMonitorScope";
 import { useRowBusy } from "./useRowBusy";
 import { useTierEditGuard } from "./useTierEditGuard";
 import { vendorBusyKey } from "./VendorRow";
@@ -76,6 +87,14 @@ export interface OperatorSectionProps {
    * 且把「这是个受限取值域」这个事实写进类型里。
    */
   appId: AppId;
+}
+
+/** 同一行换账号时 id 不变，健康快照必须把账号身份也放进键里。 */
+function operatorAccountIdentity(
+  operatorId: number,
+  accountLabel: string,
+): string {
+  return JSON.stringify([operatorId, accountLabel]);
 }
 
 /**
@@ -133,6 +152,26 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
    */
   const touchesCodexConfig = appId === "codex";
   const [operators, setOperators] = useState<OperatorRowData[]>([]);
+  // 每个运营商最近一次「刷新档位与密钥」取得的下拉选项。
+  // 缺键 = 本次会话尚未刷新；空数组 = 已刷新但当前 tab 没有可用分组。
+  const [availableGroups, setAvailableGroups] = useState<
+    Record<number, AvailableGroupInfo[]>
+  >(() => loadAvailableGroupCache(appId));
+  const availableGroupCacheAppRef = useRef(appId);
+  const skipAvailableGroupSaveRef = useRef(false);
+  useEffect(() => {
+    if (availableGroupCacheAppRef.current === appId) return;
+    availableGroupCacheAppRef.current = appId;
+    skipAvailableGroupSaveRef.current = true;
+    setAvailableGroups(loadAvailableGroupCache(appId));
+  }, [appId]);
+  useEffect(() => {
+    if (skipAvailableGroupSaveRef.current) {
+      skipAvailableGroupSaveRef.current = false;
+      return;
+    }
+    saveAvailableGroupCache(appId, availableGroups);
+  }, [appId, availableGroups]);
   /**
    * 待确认的切换：**显示名 + 真正执行它的函数**，`null` = 不弹。
    *
@@ -164,10 +203,20 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
   // 那个共处一个列表，而两张表的自增 id 必然重叠 —— 用 number 会让 DeepSeek 的
   // 余额显示到同 id 的中转站行上，且没有任何报错。
   const [balances, setBalances] = useState<Record<RowKey, number | null>>({});
+  // 渠道健康是站点返回的附加信息，不跨会话持久化；轮询失败时只保留本次会话最近一次
+  // 成功结果，下一次成功会直接替换。
+  // 键带账号标签：同一行从账号 A 换成 B 后，不会在 B 的请求回来前短暂显示 A 的结果。
+  const [channelMonitorsByAccount, setChannelMonitorsByAccount] = useState<
+    Record<string, ChannelMonitorInfo[]>
+  >({});
   // `loadBalance` 要在**请求返回时**读到最新的 operators（判账号还是不是同一个），
   // 而它是 useCallback([]) —— 闭包里的 operators 会是旧值。用 ref 取当前值。
   const operatorsRef = useRef<OperatorRowData[]>([]);
   operatorsRef.current = operators;
+  // 同一账号的余额请求正在进行时不重复发。key 含账号标签：同一行从 A 换成 B 后，
+  // B 的首次请求不必等 A 的旧请求结束；A 的结果仍会被下面的账号快照守卫丢掉。
+  const balanceRequestsInFlightRef = useRef<Set<string>>(new Set());
+  const channelMonitorRequestsInFlightRef = useRef<Set<string>>(new Set());
 
   // ── 官网直连账号（vendor）──────────────────────────────────────────
   //
@@ -198,6 +247,7 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
   // 与 `operatorsRef` 同理：`loadVendorBalance` 请求返回时要判这一行还是不是同一个账号。
   const vendorsRef = useRef<VendorAccountRow[]>([]);
   vendorsRef.current = vendors;
+  const vendorBalanceRequestsInFlightRef = useRef<Set<string>>(new Set());
   // reload 的请求序号 —— 只让最后一次的结果落地，见 `reload` 里的说明。
   const reloadSeqRef = useRef(0);
   const { t } = useTranslation();
@@ -243,7 +293,9 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
       try {
         const rows = await operatorApi.listOperators(appId);
         if (isStale()) return;
-        setOperators(rows);
+        setOperators((previous) =>
+          preserveUntouchedOperatorTierInfo(previous, rows, onlySite),
+        );
 
         // 倍率单独异步补：listOperators 只读本地（首屏不卡网络），倍率必须发请求。
         // **有意不 await** —— 先渲染出来，倍率随后把「倍率未知」换成数字。
@@ -311,6 +363,9 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
         operatorsRef.current.find((op) => op.id === operatorId)
           ?.accountLabel === accountAtRequest;
       const key = rowKey("operator", operatorId);
+      const requestIdentity = JSON.stringify([key, accountAtRequest]);
+      if (balanceRequestsInFlightRef.current.has(requestIdentity)) return;
+      balanceRequestsInFlightRef.current.add(requestIdentity);
       try {
         const b = await operatorApi.balance(operatorId);
         if (!stillSameAccount()) return;
@@ -318,23 +373,55 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
       } catch {
         if (!stillSameAccount()) return;
         setBalances((prev) => ({ ...prev, [key]: null }));
+      } finally {
+        balanceRequestsInFlightRef.current.delete(requestIdentity);
       }
     },
     [],
   );
 
-  // 行列表变了就补齐余额。依赖是**已登录行的摘要字符串**而不是 `operators` ——
-  // 后者每次 reload 都是新对象引用，会让这个 effect 每次都跑、把 N 个请求重发一遍。
-  // 编解码收在 `balanceRowsKey`（那里写了为什么不能用逗号拼接：昵称含逗号会造出一个
-  // id 为 NaN 的伪造条目，症状是那一行永远没有余额、于是也没有充值入口）。
+  // 已登录行立即拉一次，随后每 5 秒轮询。依赖是账号摘要字符串而不是 `operators`：
+  // 后者每次 reload 都是新对象引用，会无谓重建定时器。轮询 hook 会在上一轮未完成时
+  // 跳过本次 tick；`loadBalance` 自身还有逐账号去重，覆盖充值关窗/手动刷新并发撞车。
   const loggedInRowsKey = balanceRowsKey(
     operators.filter((op) => op.loggedIn).map((op) => [op.id, op.accountLabel]),
   );
-  useEffect(() => {
-    for (const [id, accountLabel] of parseBalanceRowsKey(loggedInRowsKey)) {
-      void loadBalance(id, accountLabel);
-    }
-  }, [loggedInRowsKey, loadBalance]);
+  useBalancePolling(loggedInRowsKey, loadBalance);
+
+  /**
+   * 拉某个运营商的渠道健康快照。失败完全静默并保留上一次成功结果：老版本站点可能没有
+   * `/channel-monitors`，而健康度不该影响档位、密钥或切换这些主流程。
+   */
+  const loadChannelMonitors = useCallback(
+    async (operatorId: number, accountAtRequest: string) => {
+      const stillSameAccount = () =>
+        operatorsRef.current.find((op) => op.id === operatorId)
+          ?.accountLabel === accountAtRequest;
+      const requestIdentity = operatorAccountIdentity(
+        operatorId,
+        accountAtRequest,
+      );
+      if (channelMonitorRequestsInFlightRef.current.has(requestIdentity))
+        return;
+      channelMonitorRequestsInFlightRef.current.add(requestIdentity);
+      try {
+        const monitors = await operatorApi.listChannelMonitors(operatorId);
+        if (!stillSameAccount()) return;
+        setChannelMonitorsByAccount((prev) => ({
+          ...prev,
+          [requestIdentity]: monitors,
+        }));
+      } catch {
+        // 附加信息：旧站点 404、暂时断网或功能关闭都不弹 toast，也不清掉最近一次成功值。
+      } finally {
+        channelMonitorRequestsInFlightRef.current.delete(requestIdentity);
+      }
+    },
+    [],
+  );
+
+  // 进入页面立即拉，之后每 30 秒更新；与余额共用同一份稳定账号清单。
+  useChannelMonitorPolling(loggedInRowsKey, loadChannelMonitors);
 
   /**
    * 充值窗关掉了 → 刷那一行的余额（充完钱余额该涨）。
@@ -527,6 +614,9 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
         vendorsRef.current.find((v) => v.id === rowId)?.accountLabel ===
         accountAtRequest;
       const key = rowKey("vendor", rowId);
+      const requestIdentity = JSON.stringify([key, accountAtRequest]);
+      if (vendorBalanceRequestsInFlightRef.current.has(requestIdentity)) return;
+      vendorBalanceRequestsInFlightRef.current.add(requestIdentity);
       try {
         const b = await vendorApi.balance(rowId);
         if (!stillSameAccount()) return;
@@ -534,21 +624,18 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
       } catch {
         if (!stillSameAccount()) return;
         setVendorBalances((prev) => ({ ...prev, [key]: null }));
+      } finally {
+        vendorBalanceRequestsInFlightRef.current.delete(requestIdentity);
       }
     },
     [],
   );
 
-  // 与 operator 侧那个 effect 同形，编解码共用 `balanceRowsKey`（同一份往返逻辑，
-  // 别在这里另写一遍 —— 两份里有一份没跟上正是那个逗号 bug 的形状）。
+  // 官网账号与中转站账号共用同一个 5 秒轮询 hook；值的格式和请求命令仍各走各的。
   const loggedInVendorsKey = balanceRowsKey(
     vendors.filter((v) => v.loggedIn).map((v) => [v.id, v.accountLabel]),
   );
-  useEffect(() => {
-    for (const [id, accountLabel] of parseBalanceRowsKey(loggedInVendorsKey)) {
-      void loadVendorBalance(id, accountLabel);
-    }
-  }, [loggedInVendorsKey, loadVendorBalance]);
+  useBalancePolling(loggedInVendorsKey, loadVendorBalance);
 
   /**
    * 登录窗的凭据回传解析失败了。
@@ -818,7 +905,15 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
           // 登录窗不会自动关闭（它已跳到 dashboard，用户可能要在那儿充值或看用量）。
           toast.success(t("loongport.session.connected"));
           // 直接把密钥备好 —— 不该再让用户点一次。
-          reportProvision(t, await operatorApi.provision(operatorId), appId);
+          const provisioned = await operatorApi.provision(operatorId);
+          reportProvision(t, provisioned, appId);
+          setAvailableGroups((prev) =>
+            mergeAvailableGroupRefreshes(
+              prev,
+              [[operatorId, provisioned]],
+              appId,
+            ),
+          );
         }
         // ok === false 是用户自己关了窗口，不出提示（他知道自己干了什么）。
         await reload(operators.find((op) => op.id === operatorId)?.siteOrigin);
@@ -831,9 +926,21 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
   const handleProvision = (operatorId: number) =>
     run(`provision:${operatorId}`, async () => {
       try {
-        reportProvision(t, await operatorApi.provision(operatorId), appId);
+        const target = operators.find((op) => op.id === operatorId);
+        const provisioned = await operatorApi.provision(operatorId);
+        reportProvision(t, provisioned, appId);
+        setAvailableGroups((prev) =>
+          mergeAvailableGroupRefreshes(
+            prev,
+            [[operatorId, provisioned]],
+            appId,
+          ),
+        );
         // 只刷这一个运营商的倍率 —— 别的账号没变，重查它们纯属浪费请求。
-        await reload(operators.find((op) => op.id === operatorId)?.siteOrigin);
+        await reload(target?.siteOrigin);
+        if (target) {
+          void loadChannelMonitors(target.id, target.accountLabel);
+        }
       } catch (e) {
         toast.error(String(e));
       }
@@ -869,6 +976,15 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
       const results = await Promise.allSettled(
         targets.map((op) => operatorApi.provision(op.id)),
       );
+      // 只替换成功刷新的运营商，失败项与未参与本次刷新的其它运营商都保留原分组信息。
+      setAvailableGroups((prev) => {
+        const refreshed = results.flatMap((result, index) =>
+          result.status === "fulfilled"
+            ? ([[targets[index].id, result.value]] as const)
+            : [],
+        );
+        return mergeAvailableGroupRefreshes(prev, refreshed, appId);
+      });
 
       let keysCreated = 0;
       // ⚠️ **成功数必须自己数，不能用 `targets.length`**（review 抓出）。
@@ -943,7 +1059,7 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
       // 全量重载（含倍率）—— 这是显式的全局刷新，用户愿意等。
       await reload();
 
-      // ⚠️ **余额也要重拉**（review 抓出的死路）。
+      // ⚠️ **余额与渠道健康也要重拉**（review 抓出的死路）。
       //
       // 余额只由那个 `loggedInRowsKey` effect 触发，而它的依赖是 `id:accountLabel` ——
       // 一旦某行的余额请求失败过（网络抖动），那个键不变 ⇒ **effect 永远不会再跑**，
@@ -951,6 +1067,7 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
       // 点「刷新」也没用。这里补上正是因为「刷新」就是用户表达「把这页弄成最新」的动作。
       for (const op of targets) {
         void loadBalance(op.id, op.accountLabel);
+        void loadChannelMonitors(op.id, op.accountLabel);
       }
     });
 
@@ -1075,6 +1192,39 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
     }
   };
 
+  /** 保留当前配置槽位与手工参数，只改它绑定的分组；重复绑定是合法的。 */
+  const handleRebindTier = (
+    operatorId: number,
+    tier: TierInfo,
+    groupId: number,
+  ) => {
+    if (tier.groupId === groupId) return;
+    void run(`rebind:${tier.providerId}`, async () => {
+      try {
+        const rebound = await operatorApi.rebindTier(
+          operatorId,
+          tier.providerId,
+          groupId,
+          appId,
+        );
+        toast.success(
+          t("loongport.tier.groupRebound", { name: rebound.groupName }),
+        );
+        await reload(operators.find((op) => op.id === operatorId)?.siteOrigin);
+      } catch (e) {
+        toast.error(String(e));
+      }
+    });
+  };
+
+  const channelMonitors: Record<number, ChannelMonitorInfo[] | undefined> = {};
+  for (const operator of operators) {
+    channelMonitors[operator.id] =
+      channelMonitorsByAccount[
+        operatorAccountIdentity(operator.id, operator.accountLabel)
+      ];
+  }
+
   /**
    * 「添加官网账号」按钮。**在两种布局里都要出现**，所以提成一个局部片段。
    *
@@ -1159,6 +1309,12 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
         onSwitchTier={(operatorId, tier) =>
           void handleSwitchTier(operatorId, tier)
         }
+        availableGroups={availableGroups}
+        channelMonitors={filterChannelMonitorsByOperatorForApp(
+          appId,
+          channelMonitors,
+        )}
+        onRebindTier={handleRebindTier}
         balances={balances}
         onPurchase={(operatorId) => void handlePurchase(operatorId)}
         // 档位的 providerId 就是 provider 表的主键，直接喂给上游那条命令。
@@ -1279,7 +1435,18 @@ export function OperatorSection({ appId }: OperatorSectionProps) {
       <AddSiteDialog
         open={addingSite}
         onClose={() => setAddingSite(false)}
-        onAdded={() => void reload()}
+        onAdded={(operatorId, provisioned) => {
+          if (provisioned) {
+            setAvailableGroups((prev) =>
+              mergeAvailableGroupRefreshes(
+                prev,
+                [[operatorId, provisioned]],
+                appId,
+              ),
+            );
+          }
+          void reload();
+        }}
         defaultSite={defaultSite}
         appId={appId}
       />

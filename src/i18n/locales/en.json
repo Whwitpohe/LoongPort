@@ -3044,6 +3044,7 @@
       "getKeys": "Get keys",
       "tierCount": "{{count}} tier(s)",
       "dragHandle": "Drag to reorder",
+      "currentOperator": "Current provider",
       "refetchGroups": "Re-fetch available groups",
       "purchaseHint": "Click to top up (opens this site’s purchase page in-app)",
       "lowBalanceHint": "Balance below ${{threshold}} — click to top up",
@@ -3053,9 +3054,29 @@
       "removeConfirmMessage": "This removes the login for “{{label}}” along with the {{count}} tier(s) it generated. Any balance stays with the provider — sign in again to use it.",
       "removeConfirmMessageNeverLoggedIn": "This removes the “{{label}}” row along with the {{count}} tier(s) it generated. This account was never signed in, so you can add it again any time."
     },
+    "health": {
+      "title": "Channel health",
+      "autoRefresh": "Auto-updating",
+      "group": "Group: {{name}}",
+      "responseLatency": "Response",
+      "ping": "Ping",
+      "availability7d": "7-day uptime",
+      "recentChecks": "Latest {{count}} checks",
+      "newestRight": "Newest on right",
+      "status": {
+        "operational": "Operational",
+        "degraded": "Degraded",
+        "failed": "Failed",
+        "error": "Error",
+        "unknown": "Unknown"
+      }
+    },
     "tier": {
       "rateUnknown": "Rate unknown",
       "rate": "{{value}}x",
+      "currentConfig": "Current config",
+      "actualRate": "Actual {{value}}x",
+      "actualRateHint": "Actual rate = current billing rate / balance credit multiplier (fees excluded)",
       "switching": "Switching…",
       "checkConnectivity": "Check connectivity",
       "resetConfig": "Restore default config",
@@ -3070,7 +3091,10 @@
       "userEdited": "Manually maintained",
       "userEditedHint": "You have edited this tier's config. Refreshing groups will not overwrite it (only the API key is updated). Click here to restore the default config.",
       "editMissing": "That tier's record no longer exists — use “Fetch keys” to regenerate it.",
-      "editCurrentNote": "This is the tier you're currently using. If your changes don't take effect, quit and reopen the ChatGPT desktop app — while it's running it rewrites Codex's config."
+      "editCurrentNote": "This is the tier you're currently using. If your changes don't take effect, quit and reopen the ChatGPT desktop app — while it's running it rewrites Codex's config.",
+      "groupSelectHint": "Choose the group bound to this config",
+      "groupRebound": "Rebound to “{{name}}”",
+      "refreshGroupsFirst": "Refresh tiers and keys first"
     },
     "stats": {
       "title": "Help improve LoongPort",

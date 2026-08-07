@@ -60,6 +60,8 @@ export interface Sponsor {
 
 export interface TierInfo {
   providerId: string;
+  /** 这条配置当前绑定的服务端分组；null = 尚未迁移的旧记录。 */
+  groupId: number | null;
   /**
    * 这个档位落在哪个 CLI 上（`"codex"` / `"claude"` / …）。
    *
@@ -69,6 +71,8 @@ export interface TierInfo {
    */
   appId: AppId;
   groupName: string;
+  /** 远端 API Key 自己的名字；与分组名是两个概念。 */
+  keyName: string | null;
   displayName: string;
   /** 计费倍率，越小越便宜。null = 未知，不要当 0 显示。 */
   rateMultiplier: number | null;
@@ -100,6 +104,45 @@ export interface TierInfo {
    * 不知道就别断言。
    */
   allowImageGeneration: boolean | null;
+}
+
+/** 分组下拉框的一项，实时来自对应运营商的 /api/v1/groups/available。 */
+export interface AvailableGroupInfo {
+  groupId: number;
+  groupName: string;
+  appId: AppId;
+  rateMultiplier: number;
+  /**
+   * 支付 1 单位会到账多少余额；null = 站点未提供可信比例。
+   * 实际倍率 = 扣费倍率 / 本值，明确不包含充值手续费。
+   */
+  balanceRechargeMultiplier: number | null;
+  allowImageGeneration: boolean;
+}
+
+/** `/api/v1/channel-monitors` 返回的一条渠道健康快照。 */
+export interface ChannelMonitorInfo {
+  /** 监控配置自己的 id，不是 groupId，不能用来关联分组。 */
+  monitorId: number;
+  /** 监控项自己的展示名；不保证与 /groups/available 的分组名相同。 */
+  name: string;
+  provider: string;
+  /** 监控配置显式填写的分组名；旧配置可能为空，仅作为独立标签展示。 */
+  groupName: string;
+  primaryModel: string;
+  primaryStatus: string;
+  primaryLatencyMs: number | null;
+  primaryPingLatencyMs: number | null;
+  availability7d: number | null;
+  /** 最近约 60 个检测点；服务端当前按“最新在前”返回。 */
+  timeline: ChannelMonitorTimelinePoint[];
+}
+
+export interface ChannelMonitorTimelinePoint {
+  status: string;
+  latencyMs: number | null;
+  pingLatencyMs: number | null;
+  checkedAt: string;
 }
 
 /**
@@ -138,6 +181,8 @@ export interface ProvisionSummary {
   failures: Array<{ groupName: string; reason: string }>;
   /** 这次新建了几把密钥（其余是复用已有的）。 */
   keysCreated: number;
+  /** 与本次刷新一起从 /api/v1/groups/available 得到的下拉框选项。 */
+  availableGroups: AvailableGroupInfo[];
 }
 
 export interface SwitchTierResult {
@@ -249,6 +294,26 @@ export const operatorApi = {
    */
   provision: (operatorId: number): Promise<ProvisionSummary> =>
     invoke("operator_provision", { operatorId }),
+
+  /** 实时拉对应运营商在当前 tab 可绑定的分组。 */
+  listAvailableGroups: (
+    operatorId: number,
+    app: string,
+  ): Promise<AvailableGroupInfo[]> =>
+    invoke("operator_list_available_groups", { operatorId, app }),
+
+  /** 获取渠道健康快照；旧站点不支持时由调用方静默保留上次成功结果。 */
+  listChannelMonitors: (operatorId: number): Promise<ChannelMonitorInfo[]> =>
+    invoke("operator_list_channel_monitors", { operatorId }),
+
+  /** 保留配置槽位与手工参数，只把它改绑到另一个分组；允许重复绑定。 */
+  rebindTier: (
+    operatorId: number,
+    providerId: string,
+    groupId: number,
+    app: string,
+  ): Promise<TierInfo> =>
+    invoke("operator_rebind_tier", { operatorId, providerId, groupId, app }),
 
   /**
    * 「运营商 × 分组」页的数据源：一次拿到全部运营商 + 各自在该 app 下的档位。

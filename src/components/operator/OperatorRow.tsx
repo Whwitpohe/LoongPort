@@ -25,12 +25,26 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import type {
+  AvailableGroupInfo,
+  ChannelMonitorInfo,
   OperatorRow as OperatorRowData,
   TierInfo,
 } from "@/lib/api/operator";
+import { ChannelHealthPanel } from "./ChannelHealthPanel";
 import { isLowBalance, LOW_BALANCE_THRESHOLD_USD } from "./lowBalance";
+import {
+  calculateActualRateMultiplier,
+  formatRateMultiplier,
+} from "./tierPricing";
 
 /**
  * 一行运营商 + 可折叠的档位列表。
@@ -96,6 +110,11 @@ export interface OperatorRowProps {
   onLogin: () => void;
   onProvision: () => void;
   onSwitchTier: (tier: TierInfo) => void;
+  /** undefined = 本次会话还没刷新过；数组（含空数组）= 最近一次刷新拿到的分组。 */
+  availableGroups: AvailableGroupInfo[] | undefined;
+  /** 定期从 `/api/v1/channel-monitors` 拉到的独立监控项，不强行按名称绑定分组。 */
+  channelMonitors: ChannelMonitorInfo[] | undefined;
+  onRebindTier: (tier: TierInfo, groupId: number) => void;
   /**
    * 这一行的余额。`null` = 还没拉到 / 拉失败（运营商可能关了用户面板）。
    *
@@ -149,6 +168,9 @@ export function OperatorRow({
   onLogin,
   onProvision,
   onSwitchTier,
+  availableGroups,
+  channelMonitors,
+  onRebindTier,
   balance,
   onPurchase,
   onCheckTier,
@@ -178,13 +200,16 @@ export function OperatorRow({
   return (
     <Collapsible open={open} onOpenChange={onOpenChange}>
       <div
+        aria-current={hasCurrentTier ? "true" : undefined}
         className={cn(
           // `group/row` 承接下面那些 `group-hover/row:` —— 见 `ROW_HOVER_ACTIONS`。
           // 取名而非裸 `group`：档位行嵌在这里面，裸的两层会互相点亮。
-          "group/row rounded-xl border border-border bg-card p-4 text-card-foreground transition-all duration-300",
+          "group/row relative overflow-hidden rounded-xl border bg-card p-4 text-card-foreground transition-all duration-300",
           dragHandleProps?.isDragging
             ? "cursor-grabbing border-primary shadow-lg"
-            : "hover:border-border-active",
+            : hasCurrentTier
+              ? "border-blue-500/80 bg-blue-500/[0.06] shadow-md shadow-blue-500/15 ring-1 ring-inset ring-blue-500/25 before:absolute before:inset-y-0 before:left-0 before:w-1 before:bg-blue-500 dark:bg-blue-500/[0.08]"
+              : "border-border hover:border-border-active",
         )}
       >
         <div className="flex items-center gap-2">
@@ -232,8 +257,22 @@ export function OperatorRow({
               </span>
 
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium">
-                  {operator.siteName || operator.siteOrigin}
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span
+                    className={cn(
+                      "truncate text-sm font-medium",
+                      hasCurrentTier &&
+                        "font-semibold text-blue-700 dark:text-blue-300",
+                    )}
+                  >
+                    {operator.siteName || operator.siteOrigin}
+                  </span>
+                  {hasCurrentTier && (
+                    <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700 ring-1 ring-inset ring-blue-500/30 dark:text-blue-300">
+                      <Check className="h-2.5 w-2.5" />
+                      {t("loongport.row.currentOperator")}
+                    </span>
+                  )}
                 </span>
                 {/* 账号名单独一行：同一个站可以挂多个账号，光有站名分辨不出是哪个。 */}
                 {operator.accountLabel && (
@@ -290,6 +329,7 @@ export function OperatorRow({
         </div>
 
         <CollapsibleContent className="space-y-2 pt-3">
+          <ChannelHealthPanel monitors={channelMonitors} />
           {operator.tiers.map((tier) => (
             <TierItem
               key={tier.providerId}
@@ -300,6 +340,8 @@ export function OperatorRow({
               checking={isCheckingTier(tier.providerId)}
               onReset={() => onResetTier(tier)}
               onEdit={() => onEditTier(tier)}
+              availableGroups={availableGroups}
+              onRebind={(groupId) => onRebindTier(tier, groupId)}
             />
           ))}
         </CollapsibleContent>
@@ -614,6 +656,8 @@ function TierItem({
   checking,
   onReset,
   onEdit,
+  availableGroups,
+  onRebind,
 }: {
   tier: TierInfo;
   busy: ReadonlySet<string>;
@@ -622,12 +666,25 @@ function TierItem({
   checking: boolean;
   onReset: () => void;
   onEdit: () => void;
+  availableGroups: AvailableGroupInfo[] | undefined;
+  onRebind: (groupId: number) => void;
 }) {
   const { t } = useTranslation();
   // 只禁**这一个档位**正在切换的那个按钮。原来是 `disabled={anyBusy}`，
   // 于是别的运营商在获取密钥时，这里所有「使用」按钮都灰掉了。
   const switching = busy.has(`switch:${tier.providerId}`);
   const resetting = busy.has(`reset:${tier.providerId}`);
+  const rebinding = busy.has(`rebind:${tier.providerId}`);
+  const selectedGroup =
+    tier.groupId === null
+      ? undefined
+      : availableGroups?.find((group) => group.groupId === tier.groupId);
+  const selectedRateMultiplier =
+    selectedGroup?.rateMultiplier ?? tier.rateMultiplier;
+  const selectedActualRateMultiplier = calculateActualRateMultiplier(
+    selectedRateMultiplier,
+    selectedGroup?.balanceRechargeMultiplier,
+  );
 
   // ⚠️ **`=== true` 而不是 `??` 或直接判真值** —— `userEdited` 是三态：
   // `true`（改过）/ `false`（没改）/ `null`（**判不了**，读不出密钥或这个 CLI
@@ -637,10 +694,11 @@ function TierItem({
 
   return (
     <div
+      aria-current={tier.isCurrent ? "true" : undefined}
       className={cn(
         // `group/tier` 而不是裸 `group` —— 见 `TIER_HOVER_ACTIONS` 的说明：
         // 这一行嵌在运营商行里面，裸的会被外层 hover 一起点亮。
-        "group/tier flex items-center gap-2 rounded-lg border border-border px-3 py-2 transition-all",
+        "group/tier relative flex items-center gap-2 overflow-hidden rounded-lg border px-3 py-2 transition-all",
         // 三种态的优先级：**当前在用 > 已手动维护 > 普通**。
         //
         // 当前在用压过手动维护，是因为「现在生效的是哪一档」比「这一档谁维护」
@@ -658,15 +716,102 @@ function TierItem({
         // 「它脱离自动维护了，出问题你得自己回退」。判据是尺子1：用仓里已有的
         // 颜色语义，别新造一套。
         tier.isCurrent
-          ? "border-blue-500/60 shadow-sm shadow-blue-500/10"
+          ? "border-blue-500/80 bg-blue-500/10 shadow-md shadow-blue-500/15 ring-1 ring-inset ring-blue-500/25 before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-blue-500"
           : userEdited
             ? "border-amber-500/50 bg-amber-500/5 hover:border-amber-500/70"
-            : "hover:border-border-active",
+            : "border-border hover:border-border-active",
       )}
     >
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate text-sm">{tier.groupName}</span>
+          {/* 配置槽位与分组解耦：当前值来自本地 meta，选项随「刷新档位与密钥」从
+              `/api/v1/groups/available` 一起取得。多条配置选同一个 groupId 是合法的，
+              Select 不做禁用/去重。 */}
+          <Select
+            value={tier.groupId === null ? undefined : String(tier.groupId)}
+            disabled={rebinding}
+            onValueChange={(value) => {
+              const groupId = Number(value);
+              if (Number.isSafeInteger(groupId)) onRebind(groupId);
+            }}
+          >
+            <SelectTrigger
+              className="h-7 min-w-0 max-w-[32rem] border-transparent bg-transparent px-1.5 py-0 shadow-none hover:border-border-active hover:bg-muted/50"
+              title={t("loongport.tier.groupSelectHint")}
+            >
+              <SelectValue>
+                <span className="block min-w-0 truncate">
+                  {tier.groupName}
+                  {selectedRateMultiplier !== null && (
+                    <>
+                      {" "}
+                      ·{" "}
+                      {t("loongport.tier.rate", {
+                        value: formatRateMultiplier(selectedRateMultiplier),
+                      })}
+                    </>
+                  )}
+                  {selectedActualRateMultiplier !== null && (
+                    <span
+                      className="ml-1 text-blue-600 dark:text-blue-400"
+                      title={t("loongport.tier.actualRateHint")}
+                    >
+                      ·{" "}
+                      {t("loongport.tier.actualRate", {
+                        value: formatRateMultiplier(
+                          selectedActualRateMultiplier,
+                        ),
+                      })}
+                    </span>
+                  )}
+                </span>
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {availableGroups && availableGroups.length > 0 ? (
+                availableGroups.map((group) => {
+                  const actual = calculateActualRateMultiplier(
+                    group.rateMultiplier,
+                    group.balanceRechargeMultiplier,
+                  );
+                  return (
+                    <SelectItem
+                      key={group.groupId}
+                      value={String(group.groupId)}
+                    >
+                      {group.groupName} ·{" "}
+                      {t("loongport.tier.rate", {
+                        value: formatRateMultiplier(group.rateMultiplier),
+                      })}
+                      {actual !== null && (
+                        <span
+                          className="ml-1 text-blue-600 dark:text-blue-400"
+                          title={t("loongport.tier.actualRateHint")}
+                        >
+                          ·{" "}
+                          {t("loongport.tier.actualRate", {
+                            value: formatRateMultiplier(actual),
+                          })}
+                        </span>
+                      )}
+                    </SelectItem>
+                  );
+                })
+              ) : (
+                <SelectItem value="__empty" disabled>
+                  {availableGroups === undefined
+                    ? t("loongport.tier.refreshGroupsFirst")
+                    : t("loongport.row.noTiers")}
+                </SelectItem>
+              )}
+            </SelectContent>
+          </Select>
+          {tier.isCurrent && (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700 ring-1 ring-inset ring-blue-500/30 dark:text-blue-300">
+              <Check className="h-2.5 w-2.5" />
+              {t("loongport.tier.currentConfig")}
+            </span>
+          )}
           {/* 「已手动维护」标记。**常驻不藏进 hover** —— 它是状态不是动作，
               藏起来用户就得逐行 hover 才知道哪些档位脱离了自动维护。
               与「N 个档位」「余额」同一条判据（信息常驻、动作 hover）。 */}
@@ -680,11 +825,14 @@ function TierItem({
             </span>
           )}
         </div>
-        <div className="text-xs text-muted-foreground">
-          {tier.rateMultiplier === null
-            ? t("loongport.tier.rateUnknown")
-            : t("loongport.tier.rate", { value: tier.rateMultiplier })}
-        </div>
+        {tier.keyName && (
+          <div
+            className="truncate text-[11px] text-muted-foreground/80"
+            title={tier.keyName}
+          >
+            {tier.keyName}
+          </div>
+        )}
       </div>
 
       {/* ⚠️ **整组（含主按钮「启用 / 使用中」）都是 hover / focus 才出现** ——

@@ -40,8 +40,10 @@ const t = ((key: string, options?: Record<string, unknown>) =>
 function tier(appId: TierInfo["appId"], n: number): TierInfo {
   return {
     providerId: `loongport-00000000000000${n}`,
+    groupId: null,
     appId,
     groupName: `g${n}`,
+    keyName: null,
     displayName: `g${n}`,
     rateMultiplier: null,
     isCurrent: false,
@@ -51,7 +53,13 @@ function tier(appId: TierInfo["appId"], n: number): TierInfo {
 }
 
 function summary(over: Partial<ProvisionSummary> = {}): ProvisionSummary {
-  return { tiers: [], failures: [], keysCreated: 0, ...over };
+  return {
+    tiers: [],
+    availableGroups: [],
+    failures: [],
+    keysCreated: 0,
+    ...over,
+  };
 }
 
 describe("provision 结果的播报", () => {

@@ -557,6 +557,29 @@ pub struct ProviderMeta {
     /// `website_url` 判站点，不能凭「账号对不上」就删（宁可漏删不可错删）。
     #[serde(rename = "loongportAccountId", skip_serializing_if = "Option::is_none")]
     pub loongport_account_id: Option<i64>,
+    /// LoongPort 托管配置当前绑定的 sub2api 分组 id。
+    ///
+    /// 2026-08 起 provider id 只代表「这条配置槽位」，不再等同于分组身份：用户可以从
+    /// 运营商区的下拉框把任意一条配置改绑到另一个分组，并允许多条配置绑定同一分组。
+    /// 所以绑定关系必须显式持久化，不能再从 `provider_id_for(.., group_id)` 猜。
+    /// `None` = 旧数据；刷新时仍可用历史的确定性 provider id 反查一次并补齐。
+    #[serde(rename = "loongportGroupId", skip_serializing_if = "Option::is_none")]
+    pub loongport_group_id: Option<i64>,
+    /// 与 [`Self::loongport_group_id`] 同时保存的分组展示名。
+    ///
+    /// 名称会被运营商修改，所以身份只认 id；保存名字是为了首屏继续保持「只读本地」——
+    /// 不必为了画下拉框当前值先发一次网络请求。远端刷新后会用最新名字覆盖它。
+    #[serde(rename = "loongportGroupName", skip_serializing_if = "Option::is_none")]
+    pub loongport_group_name: Option<String>,
+    /// 这条配置槽位对应的远端 API Key。Key id 用于改绑时精确调用
+    /// `PUT /api/v1/keys/:id`；Key name 是配置自身的名字，用来区分绑定同一分组的多条配置。
+    #[serde(rename = "loongportApiKeyId", skip_serializing_if = "Option::is_none")]
+    pub loongport_api_key_id: Option<i64>,
+    #[serde(
+        rename = "loongportApiKeyName",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub loongport_api_key_name: Option<String>,
     /// vendor（官网直连）账号归属。
     ///
     /// ⚠️ **不能复用 [`Self::loongport_account_id`]** —— 那是 `i64`，而 DeepSeek 的

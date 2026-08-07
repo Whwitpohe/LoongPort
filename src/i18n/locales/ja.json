@@ -3044,6 +3044,7 @@
       "getKeys": "キーを取得",
       "tierCount": "{{count}} 件のプラン",
       "dragHandle": "ドラッグして並び替え",
+      "currentOperator": "現在の事業者",
       "refetchGroups": "利用可能なグループを再取得",
       "purchaseHint": "クリックしてチャージ（このサイトの購入ページをアプリ内で開きます）",
       "lowBalanceHint": "残高が ${{threshold}} 未満です。クリックしてチャージ",
@@ -3053,9 +3054,29 @@
       "removeConfirmMessage": "「{{label}}」のログイン情報と、生成済みの {{count}} 件のプランを削除します。チャージ済みの残高は事業者側に残るため、再ログインすれば引き続き使えます。",
       "removeConfirmMessageNeverLoggedIn": "「{{label}}」の行と、生成済みの {{count}} 件のプランを削除します。このアカウントは未ログインのため、いつでも再度追加できます。"
     },
+    "health": {
+      "title": "チャネル稼働状況",
+      "autoRefresh": "自動更新",
+      "group": "グループ：{{name}}",
+      "responseLatency": "応答時間",
+      "ping": "Ping",
+      "availability7d": "7 日間稼働率",
+      "recentChecks": "直近 {{count}} 回のチェック",
+      "newestRight": "右側が最新",
+      "status": {
+        "operational": "正常",
+        "degraded": "性能低下",
+        "failed": "障害",
+        "error": "エラー",
+        "unknown": "不明"
+      }
+    },
     "tier": {
       "rateUnknown": "倍率不明",
       "rate": "{{value}} 倍",
+      "currentConfig": "現在の設定",
+      "actualRate": "実質 {{value}} 倍",
+      "actualRateHint": "実質倍率 = 現在の請求倍率 ÷ チャージ反映倍率（手数料を含まない）",
       "switching": "切り替え中…",
       "checkConnectivity": "接続を確認",
       "resetConfig": "デフォルト設定に戻す",
@@ -3070,7 +3091,10 @@
       "userEdited": "手動管理中",
       "userEditedHint": "この枠の設定を編集済みです。グループを更新しても上書きされません（キーのみ更新）。クリックでデフォルト設定に戻せます。",
       "editMissing": "この枠のレコードが見つかりません。「キーを取得」で再生成してください。",
-      "editCurrentNote": "これは現在使用中の枠です。変更が反映されない場合は ChatGPT デスクトップ版を終了して開き直してください —— 起動中は Codex の設定を書き戻します。"
+      "editCurrentNote": "これは現在使用中の枠です。変更が反映されない場合は ChatGPT デスクトップ版を終了して開き直してください —— 起動中は Codex の設定を書き戻します。",
+      "groupSelectHint": "この設定に紐づけるグループを選択",
+      "groupRebound": "「{{name}}」に紐づけ直しました",
+      "refreshGroupsFirst": "先にティアとキーを更新してください"
     },
     "stats": {
       "title": "LoongPort の改善に協力",

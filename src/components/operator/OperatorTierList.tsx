@@ -21,6 +21,8 @@ import { CSS } from "@dnd-kit/utilities";
 
 import { Button } from "@/components/ui/button";
 import type {
+  AvailableGroupInfo,
+  ChannelMonitorInfo,
   OperatorRow as OperatorRowData,
   TierInfo,
 } from "@/lib/api/operator";
@@ -124,6 +126,11 @@ export interface OperatorTierListProps {
   onLogin: (operatorId: number) => void;
   onProvision: (operatorId: number) => void;
   onSwitchTier: (operatorId: number, tier: TierInfo) => void;
+  /** 按运营商缓存的远端分组；缺键表示尚未加载。 */
+  availableGroups: Readonly<Record<number, AvailableGroupInfo[] | undefined>>;
+  /** 按运营商账号保存的渠道健康快照；缺键表示尚未成功获取或站点不支持。 */
+  channelMonitors: Readonly<Record<number, ChannelMonitorInfo[] | undefined>>;
+  onRebindTier: (operatorId: number, tier: TierInfo, groupId: number) => void;
   /** 拖动结束后的新顺序（完整 id 序列，下标即 sort_index）。 */
   onReorder: (operatorIds: number[]) => void;
   /**
@@ -223,6 +230,9 @@ export function OperatorTierList({
   onLogin,
   onProvision,
   onSwitchTier,
+  availableGroups,
+  channelMonitors,
+  onRebindTier,
   onReorder,
   balances,
   onPurchase,
@@ -383,6 +393,11 @@ export function OperatorTierList({
                   onLogin={() => onLogin(op.id)}
                   onProvision={() => onProvision(op.id)}
                   onSwitchTier={(tier) => onSwitchTier(op.id, tier)}
+                  availableGroups={availableGroups[op.id]}
+                  channelMonitors={channelMonitors[op.id]}
+                  onRebindTier={(tier, groupId) =>
+                    onRebindTier(op.id, tier, groupId)
+                  }
                   // `?? null` 而不是 `?? undefined`：缺键与「拉失败」在 UI 上是
                   // 同一件事（都不显示余额），统一成 null 让行组件只判一种。
                   balance={balances[rowKey("operator", op.id)] ?? null}

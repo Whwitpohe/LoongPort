@@ -3044,6 +3044,7 @@
       "getKeys": "获取密钥",
       "tierCount": "{{count}} 个档位",
       "dragHandle": "拖动排序",
+      "currentOperator": "当前运营商",
       "refetchGroups": "重新拉取可用分组",
       "purchaseHint": "点击充值（在应用内打开该站点的充值页）",
       "lowBalanceHint": "余额不足 ${{threshold}}，点击充值",
@@ -3053,9 +3054,29 @@
       "removeConfirmMessage": "会删掉「{{label}}」的登录态，连带它已生成的 {{count}} 个档位。已充值的余额留在运营商那边，重新登录就能再用。",
       "removeConfirmMessageNeverLoggedIn": "会删掉「{{label}}」这一行，连带它已生成的 {{count}} 个档位。这个账号从没登录过，随时可以重新添加。"
     },
+    "health": {
+      "title": "渠道健康",
+      "autoRefresh": "自动更新",
+      "group": "分组：{{name}}",
+      "responseLatency": "请求延迟",
+      "ping": "Ping",
+      "availability7d": "7 天可用率",
+      "recentChecks": "最近 {{count}} 次检测",
+      "newestRight": "右侧最新",
+      "status": {
+        "operational": "正常",
+        "degraded": "性能下降",
+        "failed": "故障",
+        "error": "异常",
+        "unknown": "未知"
+      }
+    },
     "tier": {
       "rateUnknown": "倍率未知",
       "rate": "{{value}} 倍",
+      "currentConfig": "当前配置",
+      "actualRate": "实际 {{value}} 倍",
+      "actualRateHint": "实际倍率 = 当前扣费倍率 ÷ 充值到账比例（不含手续费）",
       "switching": "切换中…",
       "checkConnectivity": "检测连通",
       "resetConfig": "恢复默认配置",
@@ -3070,7 +3091,10 @@
       "userEdited": "已手动维护",
       "userEditedHint": "这个档位的配置你改过。刷新分组不会覆盖它（只更新密钥）。点这里恢复默认配置。",
       "editMissing": "这个档位的记录已经不在了，请点「获取密钥」重新生成。",
-      "editCurrentNote": "这是当前正在使用的档位。改完如果没生效，退出并重开 ChatGPT 桌面版 —— 它在跑的时候会把 codex 的配置改回去。"
+      "editCurrentNote": "这是当前正在使用的档位。改完如果没生效，退出并重开 ChatGPT 桌面版 —— 它在跑的时候会把 codex 的配置改回去。",
+      "groupSelectHint": "选择这条配置绑定的分组",
+      "groupRebound": "已改绑到「{{name}}」",
+      "refreshGroupsFirst": "请先刷新档位与密钥"
     },
     "stats": {
       "title": "帮助改进 LoongPort",

@@ -89,7 +89,12 @@ vi.mock("@/components/ui/dialog", () => ({
 const { AddSiteDialog } = await import("@/components/operator/AddSiteDialog");
 
 /** 一份空的 provision 结果 —— 这些测试关心的是「有没有调它」，不是它返回什么。 */
-const emptySummary = { tiers: [], keysCreated: 0, failures: [] };
+const emptySummary = {
+  tiers: [],
+  availableGroups: [],
+  keysCreated: 0,
+  failures: [],
+};
 
 function renderDialog(overrides: { onAdded?: () => void } = {}) {
   return render(
@@ -172,6 +177,7 @@ describe("「添加中转站」登录后就地备好密钥", () => {
   it("部分分组建密钥失败时点名说出来（行内那两条路径就是这么做的）", async () => {
     provision.mockResolvedValue({
       tiers: [{ providerId: "p1" }],
+      availableGroups: [],
       keysCreated: 1,
       failures: [{ groupName: "pro池", reason: "已达 Key 上限" }],
     });

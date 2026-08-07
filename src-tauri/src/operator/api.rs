@@ -9,7 +9,9 @@
 //! | `GET /api/v1/groups/available` | 拉可用分组 | Bearer(JWT) |
 //! | `GET /api/v1/keys` | 认领已有 sk（明文返回） | Bearer(JWT) |
 //! | `POST /api/v1/keys` | 建新 sk | Bearer(JWT) |
+//! | `PUT /api/v1/keys/:id` | 把指定 Key 改绑到另一个分组 | Bearer(JWT) |
 //! | `GET /api/v1/user/profile` | 余额 + 账号身份 | Bearer(JWT) |
+//! | `GET /api/v1/payment/checkout-info` | 充值到账比例（用于换算实际倍率） | Bearer(JWT) |
 //! | `GET /v1/sub2api/billing` | 一把 sk 的最终倍率 | **Bearer(sk)** |
 //!
 //! ## 接第二家运营商（如 new-api）时改这里
@@ -150,6 +152,51 @@ pub struct Group {
     pub allow_image_generation: bool,
 }
 
+/// 渠道监控（`GET /api/v1/channel-monitors`）的一项。
+///
+/// 只接健康面板会展示的字段；`extra_models` 当前不消费，serde 会安全忽略。`id` 是
+/// 监控项 id，**不是**分组 id，调用方不能拿它直接关联分组。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChannelMonitor {
+    pub id: i64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub group_name: String,
+    #[serde(default)]
+    pub primary_model: String,
+    #[serde(default)]
+    pub primary_status: String,
+    #[serde(default)]
+    pub primary_latency_ms: Option<i64>,
+    #[serde(default)]
+    pub primary_ping_latency_ms: Option<i64>,
+    #[serde(default)]
+    pub availability_7d: Option<f64>,
+    #[serde(default)]
+    pub timeline: Vec<ChannelMonitorTimelinePoint>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChannelMonitorTimelinePoint {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub latency_ms: Option<i64>,
+    #[serde(default)]
+    pub ping_latency_ms: Option<i64>,
+    #[serde(default)]
+    pub checked_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChannelMonitorList {
+    #[serde(default)]
+    items: Vec<ChannelMonitor>,
+}
+
 /// 倍率高于这个值的分组不呈现给用户。
 ///
 /// 运营商会建「渠道监控专用分组」这类探针池，故意把 `rate_multiplier` 设成 100 之类的惩罚性
@@ -197,6 +244,9 @@ pub struct ApiKey {
     pub key: String,
     #[serde(default)]
     pub name: String,
+    /// 当前绑定的分组。更新下拉绑定时据此确认本地配置与远端 Key 仍一致。
+    #[serde(default)]
+    pub group_id: Option<i64>,
     #[serde(default)]
     pub status: String,
 }
@@ -255,6 +305,31 @@ pub struct Balance {
     pub balance: f64,
     #[serde(default, alias = "frozen_balance")]
     pub frozen_balance: f64,
+}
+
+/// `GET /api/v1/payment/checkout-info` 的窄子集。
+///
+/// 这里只取「实付金额会换成多少余额」这一项。手续费字段即使响应里存在也有意不接：
+/// 产品口径明确要求实际倍率**不算手续费**，所以计算只能是
+/// `扣费倍率 / balance_recharge_multiplier`。
+#[derive(Debug, Clone, Deserialize)]
+struct CheckoutInfo {
+    #[serde(default)]
+    balance_disabled: bool,
+    #[serde(default)]
+    balance_recharge_multiplier: Option<f64>,
+}
+
+impl CheckoutInfo {
+    /// 能用于换算的充值到账比例。关闭余额充值、缺字段、0、NaN、Infinity 都按未知处理，
+    /// 不能擅自回落成 1:1 —— 那会把一个看似精确但实际错误的倍率展示给用户。
+    fn usable_balance_recharge_multiplier(&self) -> Option<f64> {
+        if self.balance_disabled {
+            return None;
+        }
+        self.balance_recharge_multiplier
+            .filter(|value| value.is_finite() && *value > 0.0)
+    }
 }
 
 /// 一把 sk 的计费倍率（`GET /v1/sub2api/billing`）的窄子集。
@@ -325,7 +400,7 @@ impl Account {
 /// | `http://bestapi.store/login?next=/` | 同上（路径与查询串都丢掉） |
 /// | `https://www.790053500.com/usage` | `https://www.790053500.com`（**`www.` 保留**，见下） |
 ///
-/// **一律升到 https**：sub2api 站点都跑 TLS，而登录页要过 WebView，明文 http 会被拦。
+/// 公网站点一律使用 HTTPS；本地调试仅允许 `localhost`、`127.0.0.1` 与 `::1` 使用 HTTP。
 ///
 /// ## ⚠️ **不要剥 `www.`** —— 试过一次，是个 P0
 ///
@@ -362,27 +437,34 @@ pub fn normalize_site_origin(input: &str) -> Result<String, AppError> {
         return Err(AppError::InvalidInput("域名不能为空".into()));
     }
     // 补 scheme 再交给 url crate——否则 `bestapi.store` 会被解析成一个 scheme 而不是 host。
-    let with_scheme = if raw.contains("://") {
+    let has_explicit_scheme = raw.contains("://");
+    let with_scheme = if has_explicit_scheme {
         raw.to_string()
     } else {
         format!("https://{raw}")
     };
-    let url = url::Url::parse(&with_scheme)
+    let mut url = url::Url::parse(&with_scheme)
         .map_err(|e| AppError::InvalidInput(format!("域名格式不对: {e}")))?;
 
-    let host = url
-        .host_str()
-        .ok_or_else(|| AppError::InvalidInput("域名里没有主机名".into()))?;
-    // 拒绝畸形 host：空标签（`x..y`）会被 url crate 当合法域交出来。
-    if host.split('.').any(|label| label.is_empty()) || !host.contains('.') {
+    let host = url.host_str().expect("url::Url::host 已确认存在");
+    let is_local_dev_host =
+        matches!(host, "127.0.0.1" | "[::1]") || host.eq_ignore_ascii_case("localhost");
+    // 拒绝畸形域名和普通单标签主机；localhost 是唯一允许的单标签开发地址。
+    if url.domain().is_some()
+        && !is_local_dev_host
+        && (host.split('.').any(|label| label.is_empty()) || !host.contains('.'))
+    {
         return Err(AppError::InvalidInput(format!("主机名不合法: {host}")));
     }
-    // `origin().ascii_serialization()` 而不是 `to_string()`：后者恒带尾斜杠。
-    let mut origin = format!("https://{host}");
-    if let Some(port) = url.port() {
-        origin.push_str(&format!(":{port}"));
-    }
-    Ok(origin)
+    // 没写 scheme 的 loopback 默认走 http；显式写 https 时仍尊重它（本机也可能配 TLS）。
+    let scheme = if is_local_dev_host && (!has_explicit_scheme || url.scheme() == "http") {
+        "http"
+    } else {
+        "https"
+    };
+    url.set_scheme(scheme)
+        .map_err(|_| AppError::InvalidInput("只支持 HTTP 或 HTTPS 地址".into()))?;
+    Ok(url.origin().ascii_serialization())
 }
 
 /// 由面板 origin 与后台声明的 `api_base_url` 算出 codex `base_url`（必须以 `/v1` 结尾）。
@@ -536,6 +618,19 @@ impl Client {
             .await
     }
 
+    /// 拉当前站点公开给用户看的渠道健康状态。
+    ///
+    /// 与 `/groups/available` 的平数组不同，这个端点的 `data` 是 `{ items: [...] }`。
+    pub async fn list_channel_monitors(&self) -> Result<Vec<ChannelMonitor>, AppError> {
+        let list: ChannelMonitorList = self
+            .send(
+                self.http.get(self.url("/channel-monitors")),
+                "获取分组健康度",
+            )
+            .await?;
+        Ok(list.items)
+    }
+
     /// 拉当前用户的全部 API Key（分页迭代到取完）。
     ///
     /// `page_size` 上限 1000，超限**静默回落 20**（不报错），所以取 100 这个稳妥值。
@@ -593,10 +688,42 @@ impl Client {
             .await
     }
 
+    /// 把一把已有 Key 改绑到另一个分组。请求体只发送 `group_id`，与网页端抓包一致；
+    /// 服务端不会更换 `key` 字符串，所以本地配置槽位的身份与手工参数都能保持不变。
+    pub async fn update_key_group(&self, key_id: i64, group_id: i64) -> Result<ApiKey, AppError> {
+        self.send(
+            self.update_key_group_request(key_id, group_id),
+            "更新密钥分组",
+        )
+        .await
+    }
+
+    /// 组装 Key 改绑请求（不发），供单测钉住 URL、方法与请求体。
+    fn update_key_group_request(&self, key_id: i64, group_id: i64) -> reqwest::RequestBuilder {
+        let body = serde_json::json!({ "group_id": group_id });
+        self.http
+            .put(self.url(&format!("/keys/{key_id}")))
+            .json(&body)
+    }
+
     /// 余额。
     pub async fn balance(&self) -> Result<Balance, AppError> {
         self.send(self.http.get(self.url("/user/profile")), "获取余额")
             .await
+    }
+
+    /// 充值到账比例：支付 1 个支付币种单位会得到多少余额。
+    ///
+    /// 调用方用 `分组/Key 扣费倍率 ÷ 本值` 得到不含手续费的实际倍率。返回 `None`
+    /// 表示站点关闭余额充值或没有给出可信比例，此时 UI 不显示“实际倍率”。
+    pub async fn balance_recharge_multiplier(&self) -> Result<Option<f64>, AppError> {
+        let info: CheckoutInfo = self
+            .send(
+                self.http.get(self.url("/payment/checkout-info")),
+                "获取充值比例",
+            )
+            .await?;
+        Ok(info.usable_balance_recharge_multiplier())
     }
 
     /// 账号身份。与 [`Self::balance`] 打的是同一个端点，只是取另外几个字段 ——
@@ -1040,13 +1167,7 @@ mod tests {
     fn normalize_site_origin_rejects_malformed_hosts() {
         // 空标签会被 url crate 当合法域交出来（实测 `x..y` → Domain("x..y")），
         // 必须显式拦掉，否则畸形输入会被当成正常站点去探测。
-        for bad in [
-            "",
-            "   ",
-            "localhost",
-            "bestapi.store..",
-            "x..bestapi.store",
-        ] {
+        for bad in ["", "   ", "intranet", "bestapi.store..", "x..bestapi.store"] {
             assert!(
                 normalize_site_origin(bad).is_err(),
                 "should reject: {bad:?}"
@@ -1060,6 +1181,93 @@ mod tests {
             normalize_site_origin("https://my.relay.dev:8443/panel").unwrap(),
             "https://my.relay.dev:8443"
         );
+    }
+
+    /// 本地开发地址允许明文 HTTP，其他地址仍强制 HTTPS。
+    #[test]
+    fn local_origins_allow_http_without_weakening_public_sites() {
+        for (input, want) in [
+            ("127.0.0.1:8080", "http://127.0.0.1:8080"),
+            ("localhost:8080", "http://localhost:8080"),
+            ("http://[::1]:8080/login", "http://[::1]:8080"),
+            ("https://localhost:8443", "https://localhost:8443"),
+            ("http://bestapi.store/login", "https://bestapi.store"),
+        ] {
+            assert_eq!(
+                normalize_site_origin(input).unwrap(),
+                want,
+                "input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn changing_a_dropdown_group_builds_put_for_that_exact_key_id() {
+        let client = Client::new("https://example.com", "jwt-test", Some(7)).expect("client");
+        let request = client
+            .update_key_group_request(2937, 42)
+            .build()
+            .expect("request");
+
+        assert_eq!(request.method(), reqwest::Method::PUT);
+        assert_eq!(
+            request.url().as_str(),
+            "https://example.com/api/v1/keys/2937"
+        );
+        let body = request
+            .body()
+            .and_then(reqwest::Body::as_bytes)
+            .expect("json body");
+        let json: serde_json::Value = serde_json::from_slice(body).expect("valid json");
+        assert_eq!(json["group_id"], 42);
+        assert_eq!(json.as_object().map(serde_json::Map::len), Some(1));
+    }
+
+    #[test]
+    fn channel_monitor_list_parses_the_user_endpoint_shape() {
+        let envelope: Envelope<ChannelMonitorList> = serde_json::from_str(
+            r#"{
+                "code": 0,
+                "message": "success",
+                "data": {
+                    "items": [{
+                        "id": 84,
+                        "name": "GPT-5.6 Sol",
+                        "provider": "openai",
+                        "group_name": "",
+                        "primary_status": "operational",
+                        "primary_latency_ms": 2385,
+                        "primary_ping_latency_ms": 16,
+                        "availability_7d": 97.75280898876404,
+                        "extra_models": [],
+                        "timeline": [{
+                            "status": "operational",
+                            "latency_ms": 2385,
+                            "ping_latency_ms": 16,
+                            "checked_at": "2026-08-06T19:52:50Z"
+                        }]
+                    }]
+                }
+            }"#,
+        )
+        .expect("渠道健康响应应能解析");
+
+        let items = envelope.into_data("测试").expect("成功信封").items;
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.id, 84, "这是监控项 id，只负责保真传递");
+        assert_eq!(item.name, "GPT-5.6 Sol");
+        assert_eq!(item.group_name, "", "允许旧监控没有 group_name");
+        assert_eq!(item.primary_model, "gpt-5.6-sol");
+        assert_eq!(item.primary_status, "operational");
+        assert_eq!(item.primary_latency_ms, Some(2385));
+        assert_eq!(item.primary_ping_latency_ms, Some(16));
+        assert_eq!(item.availability_7d, Some(97.75280898876404));
+        assert_eq!(item.timeline.len(), 1);
+        assert_eq!(item.timeline[0].status, "operational");
+        assert_eq!(item.timeline[0].latency_ms, Some(2385));
+        assert_eq!(item.timeline[0].ping_latency_ms, Some(16));
+        assert_eq!(item.timeline[0].checked_at, "2026-08-06T19:52:50Z");
     }
 
     /// 打真实站点验探测链路。**默认不跑**（`#[ignore]`）—— CI 不该依赖外网可达，
@@ -1271,6 +1479,37 @@ mod tests {
     }
 
     #[test]
+    fn checkout_info_exposes_only_a_valid_enabled_recharge_multiplier() {
+        let enabled: Envelope<CheckoutInfo> = serde_json::from_str(
+            r#"{"code":0,"data":{"balance_disabled":false,"balance_recharge_multiplier":0.14,"recharge_fee_rate":2.5}}"#,
+        )
+        .expect("要能解 checkout-info");
+        assert_eq!(
+            enabled
+                .into_data("测试")
+                .expect("成功信封")
+                .usable_balance_recharge_multiplier(),
+            Some(0.14),
+            "手续费字段不能参与充值到账比例"
+        );
+
+        for raw in [
+            r#"{"code":0,"data":{"balance_disabled":true,"balance_recharge_multiplier":0.14}}"#,
+            r#"{"code":0,"data":{"balance_disabled":false,"balance_recharge_multiplier":0}}"#,
+            r#"{"code":0,"data":{"balance_disabled":false}}"#,
+        ] {
+            let info: Envelope<CheckoutInfo> = serde_json::from_str(raw).expect("响应形状");
+            assert_eq!(
+                info.into_data("测试")
+                    .expect("成功信封")
+                    .usable_balance_recharge_multiplier(),
+                None,
+                "无可信充值比例时不能伪装成 1:1：{raw}"
+            );
+        }
+    }
+
+    #[test]
     fn classify_401_separates_account_state_from_expiry() {
         // 账号态问题必须提示重新登录，且文案要与「过期」不同——混成一句会让用户
         // 反复点重试，撞 /auth/login 的 20 次/分钟限流。
@@ -1410,6 +1649,7 @@ mod tests {
             id: 1,
             key: "sk-x".into(),
             name: "n".into(),
+            group_id: None,
             status: status.into(),
         };
         assert!(mk("active").is_usable());

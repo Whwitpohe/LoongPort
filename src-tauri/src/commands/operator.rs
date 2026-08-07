@@ -138,6 +138,8 @@ pub struct ProbeResult {
 #[serde(rename_all = "camelCase")]
 pub struct TierInfo {
     pub provider_id: String,
+    /// 这条配置槽位当前绑定的 sub2api 分组。`None` = 尚未迁移的旧记录。
+    pub group_id: Option<i64>,
     /// 这个档位落在哪个 CLI 上（`AppType::as_str()`，如 `"codex"` / `"claude"`）。
     ///
     /// ## 为什么必须有它
@@ -151,6 +153,8 @@ pub struct TierInfo {
     /// 结果天然同质），所以两条路的语义一致：**这条档位属于哪个 CLI**。
     pub app_id: String,
     pub group_name: String,
+    /// 远端 API Key 自己的名字，用于区分绑定同一分组的多条配置。
+    pub key_name: Option<String>,
     pub display_name: String,
     pub rate_multiplier: Option<f64>,
     pub is_current: bool,
@@ -178,6 +182,48 @@ pub struct TierInfo {
     /// 只有 provision 那条路填得出，[`list_operators_impl`] 恒为 `None`。
     /// UI 在 `None` 时不显示标记 —— 与 `user_edited` 同一条原则：不知道就别断言。
     pub allow_image_generation: Option<bool>,
+}
+
+/// 分组下拉框的一项。来自这个运营商自己的 `/api/v1/groups/available`，不读本地猜。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableGroupInfo {
+    pub group_id: i64,
+    pub group_name: String,
+    pub app_id: String,
+    pub rate_multiplier: f64,
+    /// 支付 1 单位会到账多少余额。前端用它把分组/Key 倍率换成不含手续费的实际倍率。
+    /// `None` = 站点不支持该接口、关闭余额充值或返回了无效值。
+    pub balance_recharge_multiplier: Option<f64>,
+    pub allow_image_generation: bool,
+}
+
+/// 分组列表展示用的渠道健康快照。来自 `/api/v1/channel-monitors`。
+///
+/// `monitor_id` 是监控配置自己的 id，不是分组 id。监控项名称与分组名并不保证一致，
+/// 所以前端把它作为独立健康卡展示，不冒充成某个下拉分组的状态。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMonitorInfo {
+    pub monitor_id: i64,
+    pub name: String,
+    pub provider: String,
+    pub group_name: String,
+    pub primary_model: String,
+    pub primary_status: String,
+    pub primary_latency_ms: Option<i64>,
+    pub primary_ping_latency_ms: Option<i64>,
+    pub availability_7d: Option<f64>,
+    pub timeline: Vec<ChannelMonitorTimelinePointInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMonitorTimelinePointInfo {
+    pub status: String,
+    pub latency_ms: Option<i64>,
+    pub ping_latency_ms: Option<i64>,
+    pub checked_at: String,
 }
 
 /// 「运营商 × 分组」页的一行运营商，连带它在当前 app 下的档位。
@@ -219,6 +265,9 @@ pub struct ProvisionSummary {
     /// 给用户看的：第二次进来应该是 0（全部认领到），若每次都在新建，说明认领逻辑有问题
     /// 正在给他账号里堆垃圾 Key。
     pub keys_created: usize,
+    /// 本次刷新从 `/api/v1/groups/available` 得到的全部可绑定分组。
+    /// `tiers` 是配置槽位，`available_groups` 是下拉框选项；两者数量可以不同。
+    pub available_groups: Vec<AvailableGroupInfo>,
 }
 
 #[derive(Debug, Serialize)]
@@ -879,6 +928,245 @@ pub async fn operator_provision(
         .map_err(|e| e.to_string())
 }
 
+/// 实时拉取某个运营商在当前 tab 可绑定的分组，供配置行的下拉框使用。
+///
+/// 走 [`provision::provision`] 而不是只调 `list_groups`：分组属于 `codex` 还是
+/// `codex-image` 需要看它真实可用的模型，单靠 `allow_image_generation` 判不出来；同时
+/// provision 会认领/创建该分组的托管 Key，用户选中后改绑可以只做一次本地原子更新。
+#[tauri::command]
+pub async fn operator_list_available_groups(
+    app_handle: tauri::AppHandle,
+    operator_id: i64,
+    app: String,
+) -> Result<Vec<AvailableGroupInfo>, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    let op = usable_operator(&app_handle, operator_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let client = api::Client::new(&op.site_origin, &op.auth_token, op.account_id)
+        .map_err(|e| e.to_string())?;
+    let mut result = provision::provision(&client)
+        .await
+        .map_err(|e| e.to_string())?;
+    provision::sort_tiers(&mut result.tiers);
+    let balance_recharge_multiplier =
+        optional_balance_recharge_multiplier(&client, &op.site_origin).await;
+
+    Ok(result
+        .tiers
+        .into_iter()
+        .filter(|targeted| targeted.app_type == app_type)
+        .map(|targeted| AvailableGroupInfo {
+            group_id: targeted.tier.group_id,
+            group_name: targeted.tier.group_name,
+            app_id: targeted.app_type.as_str().to_string(),
+            rate_multiplier: targeted.tier.rate_multiplier,
+            balance_recharge_multiplier,
+            allow_image_generation: targeted.tier.allow_image_generation,
+        })
+        .collect())
+}
+
+/// 拉取某个运营商公开给用户看的分组健康快照。
+///
+/// 这是只读附加信息：旧版 sub2api 没有该端点时命令会返回错误，前端定时轮询会保留
+/// 最近一次成功结果且不弹 toast，不影响档位、密钥或切换功能。
+#[tauri::command]
+pub async fn operator_list_channel_monitors(
+    app_handle: tauri::AppHandle,
+    operator_id: i64,
+) -> Result<Vec<ChannelMonitorInfo>, String> {
+    let op = usable_operator(&app_handle, operator_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let client = api::Client::new(&op.site_origin, &op.auth_token, op.account_id)
+        .map_err(|e| e.to_string())?;
+    let monitors = client
+        .list_channel_monitors()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(monitors
+        .into_iter()
+        .map(|monitor| ChannelMonitorInfo {
+            monitor_id: monitor.id,
+            name: monitor.name,
+            provider: monitor.provider,
+            group_name: monitor.group_name,
+            primary_model: monitor.primary_model,
+            primary_status: monitor.primary_status,
+            primary_latency_ms: monitor.primary_latency_ms,
+            primary_ping_latency_ms: monitor.primary_ping_latency_ms,
+            availability_7d: monitor.availability_7d,
+            timeline: monitor
+                .timeline
+                .into_iter()
+                .map(|point| ChannelMonitorTimelinePointInfo {
+                    status: point.status,
+                    latency_ms: point.latency_ms,
+                    ping_latency_ms: point.ping_latency_ms,
+                    checked_at: point.checked_at,
+                })
+                .collect(),
+        })
+        .collect())
+}
+
+/// “实际倍率”是附加信息：支付配置接口缺失/暂时失败不能让整次获取密钥失败。
+///
+/// 这里也有意不读取 `recharge_fee_rate`。产品口径是不算手续费，公式固定为
+/// `扣费倍率 / balance_recharge_multiplier`。
+async fn optional_balance_recharge_multiplier(
+    client: &api::Client,
+    site_origin: &str,
+) -> Option<f64> {
+    match client.balance_recharge_multiplier().await {
+        Ok(multiplier) => multiplier,
+        Err(e) => {
+            log::debug!("获取 {site_origin} 的充值比例失败（不影响档位与密钥）: {e}");
+            None
+        }
+    }
+}
+
+/// 把一条现有配置槽位改绑到另一个分组。
+///
+/// provider id、排序、用户手工参数都保留；只更新绑定元数据、展示名与 Key。多条配置可以
+/// 指向同一 `group_id`，所以这里没有唯一性检查。若这条配置正是当前项，会同步刷新 live
+/// 文件，避免 UI 显示成功而 CLI 仍拿旧 Key。
+#[tauri::command]
+pub async fn operator_rebind_tier(
+    app_handle: tauri::AppHandle,
+    operator_id: i64,
+    provider_id: String,
+    group_id: i64,
+    app: String,
+) -> Result<TierInfo, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    rebind_tier_impl(&app_handle, operator_id, &provider_id, group_id, app_type)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn rebind_tier_impl(
+    app_handle: &tauri::AppHandle,
+    operator_id: i64,
+    provider_id: &str,
+    group_id: i64,
+    app_type: AppType,
+) -> Result<TierInfo, AppError> {
+    let op = usable_operator(app_handle, operator_id).await?;
+    let client = api::Client::new(&op.site_origin, &op.auth_token, op.account_id)?;
+    let mut result = provision::provision(&client).await?;
+    provision::sort_tiers(&mut result.tiers);
+    let targeted = result
+        .tiers
+        .into_iter()
+        .find(|targeted| targeted.app_type == app_type && targeted.tier.group_id == group_id)
+        .ok_or_else(|| AppError::Config("所选分组已不可用，刷新下拉列表后重试。".into()))?;
+    let tier = targeted.tier;
+
+    let state = app_handle.state::<AppState>();
+    let existing = state
+        .db
+        .get_provider_by_id(provider_id, app_type.as_str())
+        .map_err(|e| AppError::Database(format!("读取配置失败: {e}")))?
+        .ok_or_else(|| AppError::Config("这条配置已经不存在了".into()))?;
+    if !belongs_to_account(&existing, &op.site_origin, op.account_id) {
+        return Err(AppError::Config("这条配置不属于所选运营商账号".into()));
+    }
+
+    let display_name = provision::provider_display_name(&op.site_name, &tier.group_name);
+    let mut settings_config = existing.settings_config.clone();
+    let current_api_key =
+        provision::extract_api_key(&settings_config, &app_type).ok_or_else(|| {
+            AppError::Config(
+                "这条配置里找不到当前密钥，无法定位要修改的远端 Key；请先恢复默认配置。".into(),
+            )
+        })?;
+    // 先验证本地配置形状，再改远端；否则远端已经换组而本地保存失败，会留下半完成状态。
+    if !provision::patch_api_key(&mut settings_config, &app_type, &current_api_key) {
+        return Err(AppError::Config(
+            "这条配置里找不到密钥字段，无法在保留手工参数的前提下改绑；请先恢复默认配置。".into(),
+        ));
+    }
+    if !provision::patch_display_name(&mut settings_config, &app_type, &display_name) {
+        return Err(AppError::Config(
+            "这条配置的名称字段已损坏，无法在保留手工参数的前提下改绑；请先恢复默认配置。".into(),
+        ));
+    }
+
+    // 配置槽位对应的是一把具体的远端 Key，不是“这个分组任选一把 Key”。按完整 sk
+    // 精确定位其 id，再调用 PUT /api/v1/keys/:id 更新 group_id。这样两条配置即使绑定
+    // 同一分组，仍各自保留自己的 Key，不会被合并成同一把。
+    let remote_key = client
+        .list_keys(&current_api_key)
+        .await?
+        .into_iter()
+        .find(|key| key.key.as_str() == current_api_key.as_str() && key.is_usable())
+        .ok_or_else(|| {
+            AppError::Config(
+                "远端已经找不到这条配置正在使用的 Key，请先刷新档位与密钥后重试。".into(),
+            )
+        })?;
+    let updated_key = client
+        .update_key_group(remote_key.id, tier.group_id)
+        .await?;
+    if updated_key.key.is_empty() {
+        return Err(AppError::Config("服务端更新后返回的密钥是空的".into()));
+    }
+    // 更新接口按契约保持 key 字符串不变，但仍使用服务端响应作为事实源。
+    let patched = provision::patch_api_key(&mut settings_config, &app_type, &updated_key.key);
+    debug_assert!(patched, "上面已经验证过同一份配置的密钥字段");
+
+    let mut meta = managed_meta(
+        &app_type,
+        op.account_id,
+        Some(tier.group_id),
+        Some(&tier.group_name),
+        existing.meta.clone(),
+    );
+    meta.loongport_api_key_id = Some(updated_key.id);
+    meta.loongport_api_key_name = Some(updated_key.name.clone());
+    let rebound = Provider {
+        name: display_name.clone(),
+        settings_config,
+        meta: Some(meta),
+        ..existing
+    };
+    state
+        .db
+        .save_provider(app_type.as_str(), &rebound)
+        .map_err(|e| AppError::Database(format!("保存分组绑定失败: {e}")))?;
+
+    let is_current = ProviderService::current(&state, app_type.clone())
+        .map(|current| current == rebound.id)
+        .unwrap_or(false);
+    if is_current {
+        refresh_live_for_current_tiers(&state, std::slice::from_ref(&app_type));
+    }
+
+    let user_edited = provision::is_user_edited(
+        &rebound.settings_config,
+        &app_type,
+        &rebound.name,
+        &op.api_base_url,
+        &tier.model,
+    );
+    Ok(TierInfo {
+        provider_id: rebound.id,
+        group_id: Some(tier.group_id),
+        app_id: app_type.as_str().to_string(),
+        group_name: tier.group_name,
+        key_name: Some(updated_key.name),
+        display_name,
+        rate_multiplier: Some(tier.rate_multiplier),
+        is_current,
+        user_edited,
+        allow_image_generation: Some(tier.allow_image_generation),
+    })
+}
+
 async fn do_provision(
     app_handle: &tauri::AppHandle,
     operator_id: i64,
@@ -898,6 +1186,24 @@ async fn do_provision(
     // （见 `provision::provision` 的文档）。一次登录探全部平台。
     let mut result = provision::provision(&client).await?;
     provision::sort_tiers(&mut result.tiers);
+    let balance_recharge_multiplier =
+        optional_balance_recharge_multiplier(&client, &op.site_origin).await;
+
+    // 分组下拉框与「刷新档位与密钥」共用这次 `/groups/available` 的结果。
+    // 这里先复制一份完整选项；后面的循环只按现有配置槽位写 provider，不能拿它代替选项。
+    let available_groups = result
+        .tiers
+        .iter()
+        .map(|targeted| AvailableGroupInfo {
+            group_id: targeted.tier.group_id,
+            group_name: targeted.tier.group_name.clone(),
+            app_id: targeted.app_type.as_str().to_string(),
+            rate_multiplier: targeted.tier.rate_multiplier,
+            balance_recharge_multiplier,
+            allow_image_generation: targeted.tier.allow_image_generation,
+        })
+        .collect();
+    let remote_keys = result.remote_keys.clone();
 
     // 写 provider 记录。这一段是同步的（碰 DB），所以拿完网络数据再做。
     let state = app_handle.state::<AppState>();
@@ -907,150 +1213,242 @@ async fn do_provision(
     let mut keep: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     // 这次改写到的档位里，哪些**正是所属 app 的当前项**。见循环后那段刷 live 的说明。
     let mut refresh_live: Vec<AppType> = Vec::new();
+
+    // 现有 provider 现在是「配置槽位」，分组绑定存在 meta 里。同一 group_id 可以对应
+    // 多个槽位，所以 value 必须是 Vec，不能是单个 Provider（后写覆盖前写会让重复绑定
+    // 的其中一条在下面落不进 keep，随后被 prune 当成脏数据删掉）。
+    let mut slots_by_group: std::collections::HashMap<(String, i64), Vec<Provider>> =
+        std::collections::HashMap::new();
+    let mut apps_with_slots: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for existing_app in AppType::all() {
+        let Ok(list) = ProviderService::list(&state, existing_app.clone()) else {
+            continue;
+        };
+        index_existing_slots_for_app(
+            &existing_app,
+            list.values(),
+            &result.tiers,
+            &op.site_origin,
+            op.account_id,
+            &mut slots_by_group,
+            &mut apps_with_slots,
+        );
+    }
+    for slots in slots_by_group.values_mut() {
+        slots.sort_by_key(|p| (p.sort_index.unwrap_or(usize::MAX), p.id.clone()));
+    }
+
     for (idx, targeted) in result.tiers.iter().enumerate() {
         let tier = &targeted.tier;
         // ⚠️ **用这条分组自己的 app_type**，不是调用方给的 —— 那正是
         // 「claude 页出现 chatgpt 分组」那个 bug 的根因。
         let app_type = &targeted.app_type;
 
-        let provider_id = provision::provider_id_for(&op.site_origin, op.account_id, tier.group_id);
         let display_name = provision::provider_display_name(&op.site_name, &tier.group_name);
 
-        // 认不出配置形状的 CLI 直接跳过并如实报出来 —— 不能写一条形状不对的记录
-        // （那是「看着像成功、调用必失败」）。
-        //
-        // ⚠️ **模型名用 `tier.model` 而不是 `DEFAULT_MODEL`**：纯生图分组
-        // （`/v1/models` 里只有 `gpt-image-*`）写文本模型名就是必定 404。
-        // 那个值由 `provision::pick_model` 按该分组的真实模型列表定，见它的文档。
-        let Some(defaults) = provision::settings_config_for(
-            app_type,
-            &tier.api_key,
-            &display_name,
-            &op.api_base_url,
-            &tier.model,
-        ) else {
-            result.failures.push((
-                tier.group_name.clone(),
-                format!("还不能为 {} 生成配置", app_type.as_str()),
-            ));
-            continue;
+        let app_id = app_type.as_str().to_string();
+        let bound = slots_by_group
+            .remove(&(app_id.clone(), tier.group_id))
+            .unwrap_or_default();
+        // 这个 app 从没生成过配置时保持旧行为：每个可用分组建一个槽位。只要已经有槽位，
+        // 新分组就只进入下拉选项，不擅自增加配置数量；用户可把任意现有槽位改绑过去。
+        let slots: Vec<Option<Provider>> = if bound.is_empty() {
+            if apps_with_slots.contains(&app_id) {
+                continue;
+            }
+            vec![None]
+        } else {
+            bound.into_iter().map(Some).collect()
         };
 
-        // ⚠️ **已存在的档位只换 sk，不覆盖用户的编辑**。
-        //
-        // `save_provider` 是全量覆盖 `settings_config` 的，所以照写默认配置会把用户在
-        // cc-switch 编辑页改过的模型名 / reasoning effort / 自定义端点**全冲掉** ——
-        // 而他点「获取密钥」通常只是想刷新档位列表。
-        //
-        // 要回到默认值走 `operator_reset_tier_config`（显式动作），不是这条路的副作用。
-        let existing = state
-            .db
-            .get_provider_by_id(&provider_id, app_type.as_str())
-            .ok()
-            .flatten();
+        for existing in slots {
+            let provider_id = existing.as_ref().map_or_else(
+                || provision::provider_id_for(&op.site_origin, op.account_id, tier.group_id),
+                |provider| provider.id.clone(),
+            );
 
-        let settings_config = match existing {
-            Some(old) => {
-                let mut kept = old.settings_config;
-                // patch 失败（形状被改坏 / 该放 sk 的 section 没了）⇒ 回落到默认配置。
-                // 否则用户会留着一把旧 sk 却以为刷新成功了。
-                if provision::patch_api_key(&mut kept, app_type, &tier.api_key) {
-                    // ⚠️ **顺手修正过时的模型名**（只在用户没改过配置时）。
-                    //
-                    // 上面那条「已存在的档位只换 sk」的规则本意是不冲掉用户的编辑，
-                    // 但它连**我们自己写错的值**也一起保护了 ⇒ `pick_model` 上线前
-                    // 被写成文本模型的纯生图档位，用户点多少次刷新都不会变好
-                    // （实测：选中即 404，且生图工具的入口判据一直不成立）。
-                    //
-                    // 判据在 `repair_stale_model` 里（`is_user_edited == Some(false)`
-                    // 才动），所以用户改过的档位仍然不受影响。
-                    if provision::repair_stale_model(
-                        &mut kept,
-                        app_type,
-                        &display_name,
-                        &op.api_base_url,
-                        &tier.model,
-                    ) {
-                        log::info!(
+            // 已有配置槽位优先继续使用它自己的远端 Key。尤其是两条配置绑定同一分组时，
+            // 不能把 provision 为该分组挑中的“一把代表 Key”写进两条配置，否则刷新一次
+            // 两条就悄悄合并了。只有原 Key 已不存在/已换到别组时才回落到本轮备好的 Key。
+            let slot_remote_key = existing
+                .as_ref()
+                .and_then(|provider| {
+                    provision::extract_api_key(&provider.settings_config, app_type)
+                })
+                .and_then(|current_key| {
+                    remote_keys.iter().find(|remote| {
+                        remote.key.as_str() == current_key.as_str()
+                            && remote.is_usable()
+                            && remote.group_id == Some(tier.group_id)
+                    })
+                })
+                .cloned();
+            let (api_key, api_key_id, api_key_name) = match slot_remote_key {
+                Some(remote) => (remote.key, remote.id, remote.name),
+                None => (
+                    tier.api_key.clone(),
+                    tier.api_key_id,
+                    tier.api_key_name.clone(),
+                ),
+            };
+
+            // 认不出配置形状的 CLI 直接跳过并如实报出来 —— 不能写一条形状不对的记录
+            // （那是「看着像成功、调用必失败」）。
+            //
+            // ⚠️ **模型名用 `tier.model` 而不是 `DEFAULT_MODEL`**：纯生图分组
+            // （`/v1/models` 里只有 `gpt-image-*`）写文本模型名就是必定 404。
+            // 那个值由 `provision::pick_model` 按该分组的真实模型列表定，见它的文档。
+            let Some(defaults) = provision::settings_config_for(
+                app_type,
+                &api_key,
+                &display_name,
+                &op.api_base_url,
+                &tier.model,
+            ) else {
+                result.failures.push((
+                    tier.group_name.clone(),
+                    format!("还不能为 {} 生成配置", app_type.as_str()),
+                ));
+                continue;
+            };
+
+            // ⚠️ **已存在的档位只换 sk，不覆盖用户的编辑**。
+            //
+            // `save_provider` 是全量覆盖 `settings_config` 的，所以照写默认配置会把用户在
+            // cc-switch 编辑页改过的模型名 / reasoning effort / 自定义端点**全冲掉** ——
+            // 而他点「获取密钥」通常只是想刷新档位列表。
+            //
+            // 要回到默认值走 `operator_reset_tier_config`（显式动作），不是这条路的副作用。
+            let settings_config = match existing.as_ref() {
+                Some(old) => {
+                    let mut kept = old.settings_config.clone();
+                    // patch 失败（形状被改坏 / 该放 sk 的 section 没了）⇒ 回落到默认配置。
+                    // 否则用户会留着一把旧 sk 却以为刷新成功了。
+                    if provision::patch_api_key(&mut kept, app_type, &api_key) {
+                        // ⚠️ **顺手修正过时的模型名**（只在用户没改过配置时）。
+                        //
+                        // 上面那条「已存在的档位只换 sk」的规则本意是不冲掉用户的编辑，
+                        // 但它连**我们自己写错的值**也一起保护了 ⇒ `pick_model` 上线前
+                        // 被写成文本模型的纯生图档位，用户点多少次刷新都不会变好
+                        // （实测：选中即 404，且生图工具的入口判据一直不成立）。
+                        //
+                        // 判据在 `repair_stale_model` 里（`is_user_edited == Some(false)`
+                        // 才动），所以用户改过的档位仍然不受影响。
+                        if provision::repair_stale_model(
+                            &mut kept,
+                            app_type,
+                            &display_name,
+                            &op.api_base_url,
+                            &tier.model,
+                        ) {
+                            log::info!(
                             "{display_name} 的模型名已修正为 {}（原值是过时的默认值，用户未改过配置）",
                             tier.model
                         );
+                        }
+                        // 分组改名/改绑后，Codex TOML 里还有一份展示名。它不是用户参数，
+                        // 跟着绑定更新；解析失败时宁可只留旧内名，也不能全量覆盖用户配置。
+                        if !provision::patch_display_name(&mut kept, app_type, &display_name) {
+                            log::warn!("{display_name} 的配置里找不到名称字段，保留原值");
+                        }
+                        kept
+                    } else {
+                        log::warn!("{display_name} 的配置里找不到放密钥的位置，已重置为默认配置");
+                        defaults
                     }
-                    kept
-                } else {
-                    log::warn!("{display_name} 的配置里找不到放密钥的位置，已重置为默认配置");
-                    defaults
                 }
+                None => defaults,
+            };
+
+            let current = ProviderService::current(&state, app_type.clone()).unwrap_or_default();
+
+            let old_meta = existing.as_ref().and_then(|old| old.meta.clone());
+            let mut meta = managed_meta(
+                app_type,
+                op.account_id,
+                Some(tier.group_id),
+                Some(&tier.group_name),
+                old_meta,
+            );
+            meta.loongport_api_key_id = Some(api_key_id);
+            meta.loongport_api_key_name = Some(api_key_name.clone());
+            let provider = match existing {
+                Some(old) => Provider {
+                    name: display_name.clone(),
+                    settings_config,
+                    website_url: Some(op.site_origin.clone()),
+                    category: Some("aggregator".to_string()),
+                    meta: Some(meta),
+                    ..old
+                },
+                None => Provider {
+                    id: provider_id.clone(),
+                    name: display_name.clone(),
+                    settings_config,
+                    website_url: Some(op.site_origin.clone()),
+                    // aggregator 而不是 official：official 那条分类会触发一批只对官方订阅成立的
+                    // 逻辑（stale auth 清理、统一会话桶注入）。
+                    category: Some("aggregator".to_string()),
+                    created_at: Some(chrono::Utc::now().timestamp_millis()),
+                    sort_index: Some(idx),
+                    notes: None,
+                    meta: Some(meta),
+                    icon: None,
+                    icon_color: None,
+                    in_failover_queue: false,
+                },
+            };
+
+            state
+                .db
+                .save_provider(app_type.as_str(), &provider)
+                .map_err(|e| AppError::Database(format!("保存档位 {display_name} 失败: {e}")))?;
+
+            // ⚠️ **`keep` 必须带 app_type**，不能只放 provider_id。
+            //
+            // `provider_id` 是 `sha256(site_origin + group_id)` —— **不含 app_type**，
+            // 所以同一个分组在 claude 与 codex 下是**同一个 id**。
+            // 只按 id 判的话：`pro池` 在 claude 下是脏记录、在 codex 下是合法记录，
+            // 那个 id 落进 keep ⇒ claude 下那条被当成「该保留」⇒ **永远删不掉**。
+            // 那正是用户实测「点刷新 claude 页下仍挂着 codex 的分组」的真根因。
+            keep.insert((app_type.as_str().to_string(), provider_id.clone()));
+
+            // 这条路上判据算得**准**：`settings_config` 就在手边，`op.api_base_url` 也有，
+            // 不需要像 `list_operators_impl` 那样绕一圈。
+            //
+            // ⚠️ 基准的模型名同样用 `tier.model` —— 拿 `DEFAULT_MODEL` 去比对生图档位，
+            // 会让**每个生图档位都显示「已手动维护」**而用户一个字没改过
+            // （与 `HISTORICAL_DEFAULT_MODELS` 文档里描述的误报同一形状）。
+            let user_edited = provision::is_user_edited(
+                &provider.settings_config,
+                app_type,
+                &display_name,
+                &op.api_base_url,
+                &tier.model,
+            );
+
+            let is_current = current == provider_id;
+            if is_current {
+                refresh_live.push(app_type.clone());
             }
-            None => defaults,
-        };
 
-        let current = ProviderService::current(&state, app_type.clone()).unwrap_or_default();
-
-        let provider = Provider {
-            id: provider_id.clone(),
-            name: display_name.clone(),
-            settings_config,
-            website_url: Some(op.site_origin.clone()),
-            // aggregator 而不是 official：official 那条分类会触发一批只对官方订阅成立的
-            // 逻辑（stale auth 清理、统一会话桶注入）。
-            category: Some("aggregator".to_string()),
-            created_at: Some(chrono::Utc::now().timestamp_millis()),
-            sort_index: Some(idx),
-            notes: None,
-            meta: Some(managed_meta(app_type, op.account_id)),
-            icon: None,
-            icon_color: None,
-            in_failover_queue: false,
-        };
-
-        state
-            .db
-            .save_provider(app_type.as_str(), &provider)
-            .map_err(|e| AppError::Database(format!("保存档位 {display_name} 失败: {e}")))?;
-
-        // ⚠️ **`keep` 必须带 app_type**，不能只放 provider_id。
-        //
-        // `provider_id` 是 `sha256(site_origin + group_id)` —— **不含 app_type**，
-        // 所以同一个分组在 claude 与 codex 下是**同一个 id**。
-        // 只按 id 判的话：`pro池` 在 claude 下是脏记录、在 codex 下是合法记录，
-        // 那个 id 落进 keep ⇒ claude 下那条被当成「该保留」⇒ **永远删不掉**。
-        // 那正是用户实测「点刷新 claude 页下仍挂着 codex 的分组」的真根因。
-        keep.insert((app_type.as_str().to_string(), provider_id.clone()));
-
-        // 这条路上判据算得**准**：`settings_config` 就在手边，`op.api_base_url` 也有，
-        // 不需要像 `list_operators_impl` 那样绕一圈。
-        //
-        // ⚠️ 基准的模型名同样用 `tier.model` —— 拿 `DEFAULT_MODEL` 去比对生图档位，
-        // 会让**每个生图档位都显示「已手动维护」**而用户一个字没改过
-        // （与 `HISTORICAL_DEFAULT_MODELS` 文档里描述的误报同一形状）。
-        let user_edited = provision::is_user_edited(
-            &provider.settings_config,
-            app_type,
-            &display_name,
-            &op.api_base_url,
-            &tier.model,
-        );
-
-        let is_current = current == provider_id;
-        if is_current {
-            refresh_live.push(app_type.clone());
+            tiers.push(TierInfo {
+                is_current,
+                provider_id,
+                group_id: Some(tier.group_id),
+                // **这条分组自己的 app_type**，不是调用方给的 —— 这一整段循环的前提就是
+                // 「一次 provision 探全部平台」，写错会让前端把别的平台的档位算成自己的。
+                app_id: app_type.as_str().to_string(),
+                group_name: tier.group_name.clone(),
+                key_name: Some(api_key_name.clone()),
+                display_name: display_name.clone(),
+                rate_multiplier: Some(tier.rate_multiplier),
+                user_edited,
+                // 这条路上两个字段都有真值：模型名刚由 `pick_model` 算出来，
+                // 生图开关刚从 `/groups/available` 拉到。
+                allow_image_generation: Some(tier.allow_image_generation),
+            });
         }
-
-        tiers.push(TierInfo {
-            is_current,
-            provider_id,
-            // **这条分组自己的 app_type**，不是调用方给的 —— 这一整段循环的前提就是
-            // 「一次 provision 探全部平台」，写错会让前端把别的平台的档位算成自己的。
-            app_id: app_type.as_str().to_string(),
-            group_name: tier.group_name.clone(),
-            display_name,
-            rate_multiplier: Some(tier.rate_multiplier),
-            user_edited,
-            // 这条路上两个字段都有真值：模型名刚由 `pick_model` 算出来，
-            // 生图开关刚从 `/groups/available` 拉到。
-            allow_image_generation: Some(tier.allow_image_generation),
-        });
     }
 
     // 被改写的档位里若有**当前项**，必须把新配置落到 live 文件上。
@@ -1096,12 +1494,56 @@ async fn do_provision(
             .filter(|t| t.tier.key_was_created)
             .count(),
         tiers,
+        available_groups,
         failures: result
             .failures
             .into_iter()
             .map(|(group_name, reason)| FailureInfo { group_name, reason })
             .collect(),
     })
+}
+
+/// 把某个 CLI 下已有的托管 provider 按当前绑定分组归档。
+///
+/// value 必须是 `Vec<Provider>`：配置槽位与分组已经解耦，两条不同配置可以合法地绑定
+/// 同一个分组。旧记录没有绑定元数据时，用历史确定性 provider id 反查一次；下一次保存
+/// 会把 `group_id` 写进 meta，之后不再依赖 id 推断。
+fn index_existing_slots_for_app<'a>(
+    existing_app: &AppType,
+    providers: impl IntoIterator<Item = &'a Provider>,
+    tiers: &[provision::TargetedTier],
+    site_origin: &str,
+    account_id: Option<i64>,
+    slots_by_group: &mut std::collections::HashMap<(String, i64), Vec<Provider>>,
+    apps_with_slots: &mut std::collections::HashSet<String>,
+) {
+    let app_id = existing_app.as_str().to_string();
+    for provider in providers
+        .into_iter()
+        .filter(|p| belongs_to_account(p, site_origin, account_id))
+    {
+        apps_with_slots.insert(app_id.clone());
+        let bound_group = provider
+            .meta
+            .as_ref()
+            .and_then(|m| m.loongport_group_id)
+            .or_else(|| {
+                tiers
+                    .iter()
+                    .filter(|targeted| targeted.app_type == *existing_app)
+                    .find(|targeted| {
+                        provision::provider_id_for(site_origin, account_id, targeted.tier.group_id)
+                            == provider.id
+                    })
+                    .map(|targeted| targeted.tier.group_id)
+            });
+        if let Some(group_id) = bound_group {
+            slots_by_group
+                .entry((app_id.clone(), group_id))
+                .or_default()
+                .push(provider.clone());
+        }
+    }
 }
 
 /// 把这些 app 的**当前项**的配置刷到 live 文件上。失败只 warn，不中断调用方。
@@ -1561,7 +2003,13 @@ async fn reset_tier_config_impl(
     // 我们刚刚确认了它属于 `op` 这一行。
     let restored = Provider {
         settings_config,
-        meta: Some(managed_meta(&app_type, op.account_id)),
+        meta: Some(managed_meta(
+            &app_type,
+            op.account_id,
+            None,
+            None,
+            existing.meta.clone(),
+        )),
         ..existing
     };
 
@@ -1810,12 +2258,21 @@ fn list_tiers_impl(state: &AppState, app_type: AppType) -> Result<Vec<OwnedTier>
         .map(|p| OwnedTier {
             tier: TierInfo {
                 provider_id: p.id.clone(),
+                group_id: p.meta.as_ref().and_then(|m| m.loongport_group_id),
                 app_id: app_id.clone(),
                 // 倍率不在本地存 —— 它是服务端的定价，可能已经变了。要看倍率就重新
                 // provision，那时会从服务端拿到当前值。这里返回 None 让 UI 知道
                 // "不知道"，而不是编一个 0。
                 rate_multiplier: None,
-                group_name: p.name.clone(),
+                group_name: p
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.loongport_group_name.clone())
+                    .unwrap_or_else(|| p.name.clone()),
+                key_name: p
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.loongport_api_key_name.clone()),
                 display_name: p.name.clone(),
                 is_current: current == p.id,
                 // 判据要 `api_base_url`（按站点存），这里拿不到 ⇒ 留 None，
@@ -2469,17 +2926,30 @@ fn is_managed(p: &Provider) -> bool {
 /// `account_id` 是**归属依据**，不是可选的装饰：同一个站可以挂多个账号，而
 /// `website_url` 只记站点 ⇒ 少了它，清理 / 重建 / 删站三处都会误伤同站另一个账号的
 /// 档位（见 [`crate::provider::ProviderMeta::loongport_account_id`] 的文档）。
-fn managed_meta(app_type: &AppType, account_id: Option<i64>) -> crate::provider::ProviderMeta {
-    crate::provider::ProviderMeta {
-        // `api_format` **只被 `codex_config.rs` 消费**（`CodexCatalogToolProfile::from_api_format`），
-        // 对 claude / gemini 无意义 —— 给它们填值不会有人读，反而让人以为那里有语义。
-        api_format: match app_type {
-            AppType::Codex => Some("openai_responses".to_string()),
-            _ => None,
-        },
-        loongport_account_id: account_id,
-        ..Default::default()
+fn managed_meta(
+    app_type: &AppType,
+    account_id: Option<i64>,
+    group_id: Option<i64>,
+    group_name: Option<&str>,
+    existing: Option<crate::provider::ProviderMeta>,
+) -> crate::provider::ProviderMeta {
+    // meta 里还可能有用户在上游编辑页维护的端点 / 请求覆盖项。改绑分组只该更新
+    // LoongPort 自己拥有的三个字段，不能用 `Default` 整份盖掉。
+    let mut meta = existing.unwrap_or_default();
+    // `api_format` **只被 `codex_config.rs` 消费**（`CodexCatalogToolProfile::from_api_format`），
+    // 对 claude / gemini 无意义 —— 给它们填值不会有人读，反而让人以为那里有语义。
+    meta.api_format = match app_type {
+        AppType::Codex => Some("openai_responses".to_string()),
+        _ => None,
+    };
+    meta.loongport_account_id = account_id;
+    if let Some(group_id) = group_id {
+        meta.loongport_group_id = Some(group_id);
     }
+    if let Some(group_name) = group_name {
+        meta.loongport_group_name = Some(group_name.to_string());
+    }
+    meta
 }
 
 fn with_conn<T>(
@@ -2693,8 +3163,10 @@ mod tests {
     fn tier_info_tells_the_frontend_which_cli_it_landed_on() {
         let tier = TierInfo {
             provider_id: "loongport-0123456789abcdef".into(),
+            group_id: Some(1),
             app_id: AppType::Claude.as_str().to_string(),
             group_name: "pro池".into(),
+            key_name: Some("LoongPort/a1/anthropic/1".into()),
             display_name: "站 · pro池".into(),
             rate_multiplier: Some(1.0),
             is_current: false,
@@ -2732,9 +3204,11 @@ mod tests {
     fn tier(id: &str) -> TierInfo {
         TierInfo {
             provider_id: id.into(),
+            group_id: None,
             // 归属测试只关心「哪条属于哪个站/账号」，与落在哪个 CLI 无关。
             app_id: AppType::Codex.as_str().to_string(),
             group_name: id.into(),
+            key_name: None,
             display_name: id.into(),
             rate_multiplier: None,
             is_current: false,
@@ -2928,7 +3402,9 @@ mod tests {
         // codex：不写 apiFormat 会落到 ProxyChat profile —— 那是唯一会 spawn codex
         // 子进程的分支。
         assert_eq!(
-            managed_meta(&AppType::Codex, Some(1)).api_format.as_deref(),
+            managed_meta(&AppType::Codex, Some(1), None, None, None)
+                .api_format
+                .as_deref(),
             Some("openai_responses")
         );
 
@@ -2936,11 +3412,36 @@ mod tests {
         // 反而让人以为那里有语义。
         for app_type in [AppType::Claude, AppType::Gemini] {
             assert_eq!(
-                managed_meta(&app_type, Some(1)).api_format,
+                managed_meta(&app_type, Some(1), None, None, None).api_format,
                 None,
                 "{app_type:?} 不该有 api_format —— 只有 codex 会读它"
             );
         }
+    }
+
+    #[test]
+    fn managed_meta_preserves_unrelated_user_fields_while_rebinding() {
+        let existing = crate::provider::ProviderMeta {
+            custom_user_agent: Some("my-client/1.0".into()),
+            endpoint_auto_select: Some(true),
+            loongport_group_id: Some(1),
+            loongport_group_name: Some("旧分组".into()),
+            ..Default::default()
+        };
+
+        let rebound = managed_meta(
+            &AppType::Codex,
+            Some(7),
+            Some(2),
+            Some("新分组"),
+            Some(existing),
+        );
+
+        assert_eq!(rebound.custom_user_agent.as_deref(), Some("my-client/1.0"));
+        assert_eq!(rebound.endpoint_auto_select, Some(true));
+        assert_eq!(rebound.loongport_account_id, Some(7));
+        assert_eq!(rebound.loongport_group_id, Some(2));
+        assert_eq!(rebound.loongport_group_name.as_deref(), Some("新分组"));
     }
 
     #[test]
@@ -2989,9 +3490,111 @@ mod tests {
     /// 带账号归属的那种（provision 从此都写它，见 `managed_meta`）。
     fn seeded_owned(id: &str, name: &str, site: Option<&str>, account_id: i64) -> Provider {
         Provider {
-            meta: Some(managed_meta(&AppType::Codex, Some(account_id))),
+            meta: Some(managed_meta(
+                &AppType::Codex,
+                Some(account_id),
+                None,
+                None,
+                None,
+            )),
             ..seeded(id, name, site)
         }
+    }
+
+    fn targeted_tier(group_id: i64) -> provision::TargetedTier {
+        provision::TargetedTier {
+            app_type: AppType::Codex,
+            tier: provision::Tier {
+                group_id,
+                group_name: format!("group-{group_id}"),
+                rate_multiplier: 1.0,
+                api_key: "sk-test".into(),
+                api_key_id: group_id,
+                api_key_name: format!("key-{group_id}"),
+                key_was_created: false,
+                model: DEFAULT_MODEL.into(),
+                allow_image_generation: false,
+            },
+        }
+    }
+
+    #[test]
+    fn indexing_keeps_two_configuration_slots_bound_to_the_same_group() {
+        let site = "https://bestapi.store";
+        let mut first = seeded_owned(
+            &provision::provider_id_for(site, Some(7), 1),
+            "slot-a",
+            Some(site),
+            7,
+        );
+        let mut second = seeded_owned(
+            &provision::provider_id_for(site, Some(7), 2),
+            "slot-b",
+            Some(site),
+            7,
+        );
+        for provider in [&mut first, &mut second] {
+            let meta = provider.meta.as_mut().expect("owned provider has meta");
+            meta.loongport_group_id = Some(2);
+            meta.loongport_group_name = Some("same-group".into());
+        }
+
+        let mut slots = std::collections::HashMap::new();
+        let mut apps = std::collections::HashSet::new();
+        index_existing_slots_for_app(
+            &AppType::Codex,
+            [&first, &second],
+            &[targeted_tier(2)],
+            site,
+            Some(7),
+            &mut slots,
+            &mut apps,
+        );
+
+        let indexed = slots
+            .get(&("codex".to_string(), 2))
+            .expect("same group is indexed");
+        assert_eq!(indexed.len(), 2, "重复绑定不能互相覆盖");
+        assert_ne!(indexed[0].id, indexed[1].id, "两条配置仍是不同槽位");
+        assert!(apps.contains("codex"));
+    }
+
+    #[test]
+    fn indexing_migrates_a_legacy_provider_id_to_its_group() {
+        let site = "https://bestapi.store";
+        let legacy = seeded_owned(
+            &provision::provider_id_for(site, Some(7), 42),
+            "legacy",
+            Some(site),
+            7,
+        );
+        assert_eq!(
+            legacy
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.loongport_group_id),
+            None
+        );
+
+        let mut slots = std::collections::HashMap::new();
+        let mut apps = std::collections::HashSet::new();
+        index_existing_slots_for_app(
+            &AppType::Codex,
+            [&legacy],
+            &[targeted_tier(42)],
+            site,
+            Some(7),
+            &mut slots,
+            &mut apps,
+        );
+
+        assert_eq!(
+            slots
+                .get(&("codex".to_string(), 42))
+                .map(std::vec::Vec::len),
+            Some(1),
+            "旧记录应从历史确定性 id 找回绑定，下一次保存时再补 meta"
+        );
     }
 
     /// ⭐ **A 账号 provision 不能删掉同站 B 账号的档位。**

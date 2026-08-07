@@ -231,6 +231,11 @@ export interface ProviderMeta {
   providerType?: string;
   // GitHub Copilot 关联账号 ID（旧字段，保留兼容读取）
   githubAccountId?: string;
+  // LoongPort 托管配置绑定的 sub2api 分组；允许多条配置绑定同一分组。
+  loongportGroupId?: number;
+  loongportGroupName?: string;
+  loongportApiKeyId?: number;
+  loongportApiKeyName?: string;
 }
 
 // Skill 同步方式

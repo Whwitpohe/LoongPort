@@ -134,8 +134,10 @@ describe("数出落在当前平台的档位", () => {
     return {
       tiers: appIds.map((appId, i) => ({
         providerId: `loongport-000000000000000${i}`,
+        groupId: null,
         appId,
         groupName: `g${i}`,
+        keyName: null,
         displayName: `g${i}`,
         rateMultiplier: null,
         isCurrent: false,
@@ -143,6 +145,7 @@ describe("数出落在当前平台的档位", () => {
         isImageModel: false,
         allowImageGeneration: null,
       })),
+      availableGroups: [],
       failures: [],
       keysCreated: 0,
     };
@@ -179,8 +182,10 @@ describe("批量刷新的档位计数", () => {
     return {
       tiers: appIds.map((appId, i) => ({
         providerId: `loongport-00000000000000${i}`,
+        groupId: null,
         appId,
         groupName: `g${i}`,
+        keyName: null,
         displayName: `g${i}`,
         rateMultiplier: null,
         isCurrent: false,
@@ -188,6 +193,7 @@ describe("批量刷新的档位计数", () => {
         isImageModel: false,
         allowImageGeneration: null,
       })),
+      availableGroups: [],
       failures: [],
       keysCreated: 0,
     };

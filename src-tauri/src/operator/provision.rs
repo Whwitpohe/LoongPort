@@ -84,6 +84,10 @@ pub struct Tier {
     pub rate_multiplier: f64,
     /// 明文 sk。
     pub api_key: String,
+    /// 远端 API Key 的主键与名字。配置改绑时用 id 调 PUT `/api/v1/keys/:id`；名字是
+    /// 配置自身的标识，与分组名不是同一个概念。
+    pub api_key_id: i64,
+    pub api_key_name: String,
     /// 这把 Key 是刚建的还是认领到的（只用于日志与 UI 提示，不参与逻辑）。
     pub key_was_created: bool,
     /// 该写进这条档位配置的模型名。见 [`pick_model`]。
@@ -104,6 +108,9 @@ pub struct ProvisionResult {
     pub tiers: Vec<TargetedTier>,
     /// `(分组名, 失败原因)`。
     pub failures: Vec<(String, String)>,
+    /// provision 开始时读取到的远端 Key。命令层用它确认每个已有配置槽位自己的 Key
+    /// 仍然存在且仍绑定该分组，避免重复绑定的两条配置在刷新时被合并成同一把 Key。
+    pub remote_keys: Vec<ApiKey>,
 }
 
 /// 一个分组对应的 Key 名字。见模块文档「Key 命名契约」。
@@ -199,7 +206,10 @@ pub async fn provision(client: &Client) -> Result<ProvisionResult, AppError> {
         usable.len(),
     );
 
-    let mut result = ProvisionResult::default();
+    let mut result = ProvisionResult {
+        remote_keys: existing.clone(),
+        ..Default::default()
+    };
     for (group, app_type) in usable {
         match ensure_key_for(client, account_id, &group, &existing).await {
             Ok(tier) => {
@@ -241,47 +251,48 @@ async fn ensure_key_for(
     group: &Group,
     existing: &[ApiKey],
 ) -> Result<Tier, AppError> {
-    let (api_key, created) = match claim_key(existing, account_id, &group.platform, group.id) {
-        // 正常路径：认领到了就直接用，不发任何写请求。
-        Some(k) => (k.key.clone(), false),
-        None => {
-            let name = key_name_for(account_id, &group.platform, group.id);
-            // ⚠️ **「为什么没认领到」必须落日志**（维护者实测抓出）。
-            //
-            // 走到这一支就要发写请求（建 Key），而它是**唯一**会撞服务端幂等冲突、
-            // 会在用户账号里堆 sk 的地方。可它原来一个字都不记 ⇒ 用户看到
-            // 「创建密钥失败: HTTP 409」时，没人知道**本该认领的那把 Key 去哪了**。
-            //
-            // 那次定位（2026-08-03）花掉的正是这个信息：线上明明有一把同名的
-            // active Key，而 `claim_key` 喂真实数据实测是认得出的 ⇒
-            // 说明那一刻 `existing` 里没有它，而没有日志就查不出原因。
-            //
-            // 记 `existing` 的规模与**同前缀但没匹配上的那些名字** —— 后者是判据：
-            // 若列表里压根没有同前缀的，是 `list_keys` 那步的问题（分页 / search /
-            // 权限）；若有而没匹配上，是名字拼法或 `is_usable` 的问题。
-            // **只记名字与 status，绝不记 `key` 字段**（那是明文 sk）。
-            let same_prefix: Vec<String> = existing
-                .iter()
-                .filter(|k| k.name.starts_with(MANAGED_PREFIX))
-                .map(|k| format!("{}[{}]", k.name, k.status))
-                .collect();
-            log::info!(
-                "分组 {}（{}，platform={}）没认领到已有 Key，将新建。\
+    let (api_key, api_key_id, api_key_name, created) =
+        match claim_key(existing, account_id, &group.platform, group.id) {
+            // 正常路径：认领到了就直接用，不发任何写请求。
+            Some(k) => (k.key.clone(), k.id, k.name.clone(), false),
+            None => {
+                let name = key_name_for(account_id, &group.platform, group.id);
+                // ⚠️ **「为什么没认领到」必须落日志**（维护者实测抓出）。
+                //
+                // 走到这一支就要发写请求（建 Key），而它是**唯一**会撞服务端幂等冲突、
+                // 会在用户账号里堆 sk 的地方。可它原来一个字都不记 ⇒ 用户看到
+                // 「创建密钥失败: HTTP 409」时，没人知道**本该认领的那把 Key 去哪了**。
+                //
+                // 那次定位（2026-08-03）花掉的正是这个信息：线上明明有一把同名的
+                // active Key，而 `claim_key` 喂真实数据实测是认得出的 ⇒
+                // 说明那一刻 `existing` 里没有它，而没有日志就查不出原因。
+                //
+                // 记 `existing` 的规模与**同前缀但没匹配上的那些名字** —— 后者是判据：
+                // 若列表里压根没有同前缀的，是 `list_keys` 那步的问题（分页 / search /
+                // 权限）；若有而没匹配上，是名字拼法或 `is_usable` 的问题。
+                // **只记名字与 status，绝不记 `key` 字段**（那是明文 sk）。
+                let same_prefix: Vec<String> = existing
+                    .iter()
+                    .filter(|k| k.name.starts_with(MANAGED_PREFIX))
+                    .map(|k| format!("{}[{}]", k.name, k.status))
+                    .collect();
+                log::info!(
+                    "分组 {}（{}，platform={}）没认领到已有 Key，将新建。\
                  期望名字={name}；本次拉到 {} 把 Key，其中托管前缀的 {} 把：{:?}",
-                group.id,
-                group.name,
-                group.platform,
-                existing.len(),
-                same_prefix.len(),
-                same_prefix,
-            );
-            let created = client.create_key(&name, group.id).await?;
-            if created.key.is_empty() {
-                return Err(AppError::Config("服务端返回的密钥是空的".into()));
+                    group.id,
+                    group.name,
+                    group.platform,
+                    existing.len(),
+                    same_prefix.len(),
+                    same_prefix,
+                );
+                let created = client.create_key(&name, group.id).await?;
+                if created.key.is_empty() {
+                    return Err(AppError::Config("服务端返回的密钥是空的".into()));
+                }
+                (created.key, created.id, created.name, true)
             }
-            (created.key, true)
-        }
-    };
+        };
 
     // 拉这个分组能调哪些模型 —— 只为决定写什么模型名（纯生图分组必须写它自己的
     // `gpt-image-*`，写文本模型会 404）。
@@ -317,6 +328,8 @@ async fn ensure_key_for(
         group_name: group.name.clone(),
         rate_multiplier: group.rate_multiplier,
         api_key,
+        api_key_id,
+        api_key_name,
         key_was_created: created,
         model,
         allow_image_generation: group.allow_image_generation,
@@ -1103,6 +1116,43 @@ pub fn patch_api_key(
     true
 }
 
+/// 更新一条配置里由 LoongPort 维护的展示名，其余用户参数原样保留。
+///
+/// Claude / Gemini 等配置的名字只存在 Provider 外层，`settings_config` 里没有副本，
+/// 因而直接成功；Codex（含生图栏）还在 TOML 的 `[model_providers.custom].name`
+/// 存了一份，必须同步，否则改绑后 UI 是新分组名而 live 配置仍报旧名字。
+pub fn patch_display_name(
+    settings_config: &mut serde_json::Value,
+    app_type: &AppType,
+    display_name: &str,
+) -> bool {
+    if !matches!(app_type, AppType::Codex | AppType::CodexImage) {
+        return true;
+    }
+
+    let Some(config) = settings_config.get("config").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    let Ok(mut doc) = config.parse::<toml_edit::DocumentMut>() else {
+        return false;
+    };
+    let Some(providers) = doc
+        .get_mut("model_providers")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    else {
+        return false;
+    };
+    let Some(custom) = providers
+        .get_mut("custom")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    else {
+        return false;
+    };
+    custom.insert("name", toml_edit::value(display_name));
+    settings_config["config"] = serde_json::json!(doc.to_string());
+    true
+}
+
 /// 把一个**已存在**档位里过时的模型名修正过来。返回是否真的改了。
 ///
 /// # 为什么需要它（实测踩出来的）
@@ -1218,6 +1268,7 @@ mod tests {
             id,
             key: format!("sk-{id}"),
             name: name.into(),
+            group_id: None,
             status: status.into(),
         }
     }
@@ -1729,6 +1780,8 @@ mod tests {
             group_name: format!("g{id}"),
             rate_multiplier: rate,
             api_key: "sk".into(),
+            api_key_id: id,
+            api_key_name: format!("key-{id}"),
             key_was_created: false,
             // 排序只看倍率与 group_id，模型名与生图开关都不参与。
             model: DEFAULT_MODEL.into(),
@@ -2015,6 +2068,29 @@ mod tests {
         // **用户的编辑必须还在** —— 这条是这个函数存在的全部理由：
         // 重复 provision 走全量覆盖会把它们冲掉，而用户点「获取密钥」通常只想刷新列表。
         assert_eq!(sc["config"], "model = \"用户改过的模型\"\n自定义 = 1");
+        assert_eq!(sc["auth"]["用户加的字段"], "保留我");
+    }
+
+    #[test]
+    fn patch_display_name_changes_only_the_managed_codex_name() {
+        let mut sc =
+            settings_config_for(&AppType::Codex, "sk-old", "旧分组", "https://x.dev/v1", "m")
+                .expect("codex 必须有形状");
+        sc["auth"]["用户加的字段"] = serde_json::json!("保留我");
+        let before_key = sc["auth"]["OPENAI_API_KEY"].clone();
+
+        assert!(patch_display_name(&mut sc, &AppType::Codex, "新分组"));
+
+        let doc = sc["config"]
+            .as_str()
+            .expect("config 是 TOML 字符串")
+            .parse::<toml_edit::DocumentMut>()
+            .expect("更新后仍是合法 TOML");
+        assert_eq!(
+            doc["model_providers"]["custom"]["name"].as_str(),
+            Some("新分组")
+        );
+        assert_eq!(sc["auth"]["OPENAI_API_KEY"], before_key);
         assert_eq!(sc["auth"]["用户加的字段"], "保留我");
     }
 

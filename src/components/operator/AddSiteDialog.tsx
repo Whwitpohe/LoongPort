@@ -18,7 +18,7 @@ import { operatorApi } from "@/lib/api";
 import type { AppId } from "@/lib/api";
 // 类型从具体模块拿 —— `@/lib/api` 那个 barrel 只导出 `operatorApi`
 // （与 `OperatorRow` / `OperatorTierList` 同一写法）。
-import type { SiteInfo, Sponsor } from "@/lib/api/operator";
+import type { ProvisionSummary, SiteInfo, Sponsor } from "@/lib/api/operator";
 import { reportProvision } from "./reportProvision";
 
 /**
@@ -42,8 +42,8 @@ export interface AddSiteDialogProps {
   appId: AppId;
   /** 关闭请求。 */
   onClose: () => void;
-  /** 探测成功后调用，宿主据此 refresh。 */
-  onAdded: () => void;
+  /** 探测成功后调用；登录并刷新成功时一并带回分组下拉数据。 */
+  onAdded: (operatorId: number, provisioned?: ProvisionSummary) => void;
   /** 域名输入框的底纹词（来自 `operator_status.defaultSite`）。 */
   defaultSite: string;
   /**
@@ -133,6 +133,7 @@ export function AddSiteDialog({
     setBusy(true);
     try {
       const r = await operatorApi.probeSite(target);
+      let provisioned: ProvisionSummary | undefined;
       toast.success(t("loongport.addSite.connected", { name: r.siteName }));
       setSiteInput("");
 
@@ -182,7 +183,8 @@ export function AddSiteDialog({
         // 播报走**共用的** `reportProvision`（与 `OperatorSection` 同一个函数）：
         // 部分分组建密钥失败时要逐条点名，静默吞掉会让用户以为全部备好了。
         try {
-          reportProvision(t, await operatorApi.provision(r.operatorId), appId);
+          provisioned = await operatorApi.provision(r.operatorId);
+          reportProvision(t, provisioned, appId);
         } catch (e) {
           toast.error(String(e));
         }
@@ -197,7 +199,7 @@ export function AddSiteDialog({
       // 可能**有 token 但 account_id 为空**（见上面 `accountCountFor` 那段说的真实行），
       // 此时 `token_looks_valid` 为 true、provision 本来能成。所以理由落在用户意图上。
 
-      onAdded();
+      onAdded(r.operatorId, provisioned);
       onClose();
     } catch (e) {
       // 探测/登录失败**不清输入框、不关弹窗** —— 用户可能只是打错一个字母，
