@@ -59,11 +59,19 @@ describe("ChatGPT 确认框只在 codex 那一屏出现", () => {
     // 中转站档位（handleSwitchTier）与官网直连（handleVendorUse）各一处 ——
     // 2026-08-04 那次修的正是「两条路走同一道编排」，这次不能只修一条。
     const guarded = source.match(
-      /if \(touchesCodexConfig && chatgptNeedsAttention\)/g,
+      /touchesCodexConfig\s*&&\s*chatgptNeedsAttention\s*&&\s*!isRoutingActive/g,
     );
     expect(
       guarded?.length,
       "应有两处（中转站档位 + 官网直连账号）都带上 touchesCodexConfig",
+    ).toBe(2);
+  });
+
+  it("路由接管时两条切换路径都不弹重启确认", () => {
+    expect(source).toContain("isRoutingActive: boolean");
+    expect(
+      source.match(/!isRoutingActive/g)?.length,
+      "中转站档位与官网直连账号都必须排除路由模式",
     ).toBe(2);
   });
 

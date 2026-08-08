@@ -2267,8 +2267,8 @@ pub async fn relay_switch_tier(
 
 /// 这次切换要不要退 ChatGPT。
 ///
-/// 两个条件都得成立：**用户同意了**（`user_agreed`，来自确认弹窗），
-/// **且切的是 codex**（`app_type`）。
+/// 三个条件都得成立：**用户同意了**（`user_agreed`，来自确认弹窗）、
+/// **切的是 codex**（`app_type`），并且 **live 配置没有被代理接管**。
 ///
 /// ## 为什么 codex 之外不退
 ///
@@ -2278,8 +2278,14 @@ pub async fn relay_switch_tier(
 ///
 /// 判据放后端而不是让前端决定：前端传的 `user_agreed` 表达「用户同意了退出」，
 /// 而「这个平台要不要退」是后端事实 —— 两件事别混在一个布尔里。
-fn should_quit_chatgpt(user_agreed: bool, app_type: &AppType) -> bool {
-    user_agreed && matches!(app_type, AppType::Codex)
+/// 路由接管同样必须以后端事实为准：那时切换只改变代理目标，ChatGPT 仍连接同一个
+/// 本地地址，退出重开没有任何作用。
+fn should_quit_chatgpt(
+    user_agreed: bool,
+    app_type: &AppType,
+    proxy_owns_live_config: bool,
+) -> bool {
+    user_agreed && matches!(app_type, AppType::Codex) && !proxy_owns_live_config
 }
 
 async fn switch_tier_impl(
@@ -2288,7 +2294,11 @@ async fn switch_tier_impl(
     app_type: AppType,
     quit_chatgpt: bool,
 ) -> Result<SwitchTierResult, AppError> {
-    let quit_chatgpt = should_quit_chatgpt(quit_chatgpt, &app_type);
+    let proxy_owns_live_config = {
+        let state = app_handle.state::<AppState>();
+        crate::services::provider::proxy_owns_live_config(state.inner(), &app_type)
+    };
+    let quit_chatgpt = should_quit_chatgpt(quit_chatgpt, &app_type, proxy_owns_live_config);
     // `AppType` 没派生 Copy（上游结构，别为此改它），而下面 `ProviderService::list`
     // 会把它 move 掉 —— 事件那一步要用，先留一份。
     let app_type_for_event = app_type.clone();
@@ -3287,13 +3297,15 @@ mod tests {
     #[test]
     fn chatgpt_quit_is_codex_only() {
         // 用户同意 + codex ⇒ 退。
-        assert!(should_quit_chatgpt(true, &AppType::Codex));
+        assert!(should_quit_chatgpt(true, &AppType::Codex, false));
+        // 路由接管只热切换后端目标，live config 不变，ChatGPT 无需重启。
+        assert!(!should_quit_chatgpt(true, &AppType::Codex, true));
         // 用户同意但切的是别的平台 ⇒ **不退**。ChatGPT 桌面版只读 ~/.codex，
         // 切 claude/gemini 档位去关它纯属扰民（关掉用户正开着的、与本次切换无关的对话）。
-        assert!(!should_quit_chatgpt(true, &AppType::Claude));
-        assert!(!should_quit_chatgpt(true, &AppType::Gemini));
+        assert!(!should_quit_chatgpt(true, &AppType::Claude, false));
+        assert!(!should_quit_chatgpt(true, &AppType::Gemini, false));
         // 用户没同意 ⇒ 一律不退，哪怕是 codex。
-        assert!(!should_quit_chatgpt(false, &AppType::Codex));
+        assert!(!should_quit_chatgpt(false, &AppType::Codex, false));
     }
 
     #[test]

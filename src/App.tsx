@@ -323,6 +323,7 @@ function App() {
   const { guardedSwitch, switchDialog } = useCodexSwitchGuard(
     activeApp,
     switchProvider,
+    isCurrentAppTakeoverActive,
   );
 
   const disableOmoMutation = useDisableCurrentOmo();
@@ -998,7 +999,10 @@ function App() {
                         不把 relay 的逻辑摊进这个上游文件。
                         它内部已按「中转站 / 官方 API」两大块渲染（各自带区块头与
                         区块内的添加入口），空时也各自显示区块内的占位。 */}
-                    <RelaySection appId={activeApp} />
+                    <RelaySection
+                      appId={activeApp}
+                      isRoutingActive={isCurrentAppTakeoverActive}
+                    />
 
                     {/* 「其他」块：cc-switch 的供应商列表原样复用，添加入口仍是顶栏 +。
                         生图页（codex-image）保持改动前的形态，不套三大块布局。 */}

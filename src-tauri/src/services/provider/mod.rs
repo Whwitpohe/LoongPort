@@ -51,6 +51,24 @@ pub fn official_provider_supports_proxy_takeover(app_type: &AppType, provider: &
         && crate::proxy::providers::is_codex_official_provider(provider)
 }
 
+/// Whether proxy takeover currently owns this app's live configuration.
+///
+/// The backup is the durable ownership marker; the live placeholder covers the
+/// activation window before that marker is committed and recovery from stale
+/// database state. Provider switching uses the same predicate to choose its hot
+/// path, so callers deciding whether a client restart is needed must use it too.
+pub(crate) fn proxy_owns_live_config(state: &AppState, app_type: &AppType) -> bool {
+    let has_live_backup = futures::executor::block_on(state.db.get_live_backup(app_type.as_str()))
+        .ok()
+        .flatten()
+        .is_some();
+    let live_taken_over = state
+        .proxy_service
+        .detect_takeover_in_live_config_for_app(app_type);
+
+    has_live_backup || live_taken_over
+}
+
 /// 统一会话开关变更后，立即按新开关状态重写当前官方 Codex 供应商的
 /// live 配置，使开关即时生效（无需等下一次切换）。
 /// 当前供应商非官方（或不存在）时为 no-op：注入只作用于官方配置，
@@ -3004,16 +3022,7 @@ impl ProviderService {
         // Backup or live placeholders mean the live file is owned by proxy
         // takeover, even if the proxy server is temporarily stopped or is in the
         // activation window before enabled=true is committed.
-        let is_app_taken_over =
-            futures::executor::block_on(state.db.get_live_backup(app_type.as_str()))
-                .ok()
-                .flatten()
-                .is_some();
-        let live_taken_over = state
-            .proxy_service
-            .detect_takeover_in_live_config_for_app(&app_type);
-
-        let should_hot_switch = is_app_taken_over || live_taken_over;
+        let should_hot_switch = proxy_owns_live_config(state, &app_type);
 
         // Block switching to official providers when proxy takeover is active.
         // Using a proxy with official APIs (Anthropic/OpenAI/Google) may cause account bans.

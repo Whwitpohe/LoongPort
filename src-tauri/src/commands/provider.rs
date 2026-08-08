@@ -234,6 +234,9 @@ pub fn switch_provider_test_hook(
 /// 不复制第二遍）。`abort_on_unconfirmed_exit = false`：切供应商只写 `config.toml`，
 /// 退不掉也照常切 + 提示手动重启。
 ///
+/// **代理接管期间不走这套编排**：供应商切换是后端热切换，ChatGPT 的本地地址与
+/// live 配置都不变，直接切换即可。
+///
 /// **`None` = 不碰 ChatGPT**，这是给托盘快切 / deeplink 导入 / 项目快照那些既有调用点留的
 /// 默认行为（它们没有弹确认框的机会，而未经用户同意就关掉他正开着的 app 是不能接受的）。
 /// 只有前端在弹过确认框、用户同意之后才传 `Some(true)`。
@@ -261,7 +264,9 @@ pub async fn switch_provider(
 
         let switch_once = || switch_provider_internal(state.inner(), app_type.clone(), &id);
 
-        if !quit_chatgpt {
+        let proxy_owns_live_config =
+            crate::services::provider::proxy_owns_live_config(state.inner(), &app_type);
+        if !quit_chatgpt || proxy_owns_live_config {
             return switch_once().map_err(|e| e.to_string());
         }
 

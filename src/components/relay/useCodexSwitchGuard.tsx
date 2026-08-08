@@ -34,6 +34,7 @@ import { SwitchTierConfirmDialog } from "./SwitchTierConfirmDialog";
 export function useCodexSwitchGuard(
   appId: string,
   switchProvider: (provider: Provider, quitChatgpt?: boolean) => void,
+  isRoutingActive: boolean,
 ) {
   const [pending, setPending] = useState<Provider | null>(null);
   const [needsAttention, setNeedsAttention] = useState(false);
@@ -66,13 +67,15 @@ export function useCodexSwitchGuard(
 
   const guardedSwitch = useCallback(
     (provider: Provider) => {
-      if (appId === "codex" && needsAttention) {
+      // 路由接管时这里只热切换后端目标，ChatGPT 继续连同一个本地地址，
+      // live config 没变，因此不需要退出或重启。
+      if (appId === "codex" && needsAttention && !isRoutingActive) {
         setPending(provider);
         return;
       }
       switchRef.current(provider);
     },
-    [appId, needsAttention],
+    [appId, isRoutingActive, needsAttention],
   );
 
   const switchDialog = (

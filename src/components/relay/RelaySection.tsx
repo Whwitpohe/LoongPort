@@ -90,6 +90,8 @@ export interface RelaySectionProps {
    * 且把「这是个受限取值域」这个事实写进类型里。
    */
   appId: AppId;
+  /** 路由接管开启时，切换只改变代理目标，不需要重启客户端。 */
+  isRoutingActive: boolean;
 }
 
 /** 同一行换账号时 id 不变，健康快照必须把账号身份也放进键里。 */
@@ -113,7 +115,7 @@ function relayAccountIdentity(relayId: number, accountLabel: string): string {
  */
 let autoPromptedThisProcess = false;
 
-export function RelaySection({ appId }: RelaySectionProps) {
+export function RelaySection({ appId, isRoutingActive }: RelaySectionProps) {
   /**
    * 当前这一屏是不是生图页。
    *
@@ -764,9 +766,9 @@ export function RelaySection({ appId }: RelaySectionProps) {
   const handleVendorUse = (rowId: number) => {
     const row = vendorsRef.current.find((v) => v.id === rowId);
     const name = row?.vendorName ?? String(rowId);
-    // 两个条件都要成立才问：这一屏会动 codex 配置，且这台机器上装着 ChatGPT。
-    // 少了前者就会在 claude 页面问一件无关的事（见 `touchesCodexConfig` 的说明）。
-    if (touchesCodexConfig && chatgptNeedsAttention) {
+    // 非路由模式下两个条件都成立才问：这一屏会动 codex 配置，且这台机器上装着 ChatGPT。
+    // 路由模式只热切换代理目标，ChatGPT 继续连接同一个本地地址。
+    if (touchesCodexConfig && chatgptNeedsAttention && !isRoutingActive) {
       setConfirmSwitch({
         name,
         run: (quitChatgpt) => void doVendorSwitch(rowId, quitChatgpt),
@@ -1139,9 +1141,9 @@ export function RelaySection({ appId }: RelaySectionProps) {
 
   const handleSwitchTier = (_relayId: number, tier: TierInfo) => {
     if (tier.isCurrent) return;
-    // 两个条件都要成立才问，见 `touchesCodexConfig` 的说明 ——
-    // 只看 `chatgptNeedsAttention` 会在 claude / gemini 页面问一件无关的事。
-    if (touchesCodexConfig && chatgptNeedsAttention) {
+    // 非路由模式下两个条件都成立才问，见 `touchesCodexConfig` 的说明。
+    // 路由模式只热切换代理目标，ChatGPT 继续连接同一个本地地址。
+    if (touchesCodexConfig && chatgptNeedsAttention && !isRoutingActive) {
       setConfirmSwitch({
         name: tier.displayName,
         run: (quitChatgpt) => void doSwitch(tier, quitChatgpt),
