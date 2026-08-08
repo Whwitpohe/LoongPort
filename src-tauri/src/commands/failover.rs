@@ -3,6 +3,7 @@
 //! 管理代理模式下的故障转移队列（基于 providers 表的 in_failover_queue 字段）
 
 use crate::database::FailoverQueueItem;
+use crate::events::PROVIDER_SWITCHED;
 use crate::provider::Provider;
 use crate::store::AppState;
 use std::str::FromStr;
@@ -35,7 +36,7 @@ pub async fn get_available_providers_for_failover(
     // 这里滤掉是为了**不把拦得住的东西摆出来给人点**（点了会被守卫拒，但那是个坏体验）。
     Ok(available
         .into_iter()
-        .filter(|p| !crate::operator::is_managed(&p.id))
+        .filter(|p| !crate::relay::is_managed(&p.id))
         .collect())
 }
 
@@ -55,7 +56,7 @@ pub async fn add_to_failover_queue(
     // 的编排 —— codex 的 live 配置被换成托管 sk 而 ChatGPT 还连着旧的，用户全程无感。
     // 托盘菜单过滤（tray.rs 的 filter_unmanaged）在这条路上完全无效，因为切换不是从
     // 菜单点出来的。
-    crate::operator::reject_if_managed(&provider_id).map_err(|e| e.to_string())?;
+    crate::relay::reject_if_managed(&provider_id).map_err(|e| e.to_string())?;
 
     state
         .db
@@ -143,7 +144,7 @@ pub async fn set_auto_failover_enabled(
             //
             // 拦下而不是「跳过自动添加」：跳过的结果是队列仍为空、下面 `queue.first()`
             // 拿不到 P1 而报一句语焉不详的「队列为空」，用户不知道为什么。
-            if crate::operator::is_managed(&current_id) {
+            if crate::relay::is_managed(&current_id) {
                 return Err("当前用的是 LoongPort 托管的档位，它不能作为故障转移目标。\
                             请先切到普通供应商，或手动往队列里加至少一个供应商，再开启故障转移。"
                     .to_string());
@@ -201,7 +202,7 @@ pub async fn set_auto_failover_enabled(
             "providerId": p1_provider_id,
             "source": "failoverEnabled"
         });
-        let _ = app.emit("provider-switched", event_data);
+        let _ = app.emit(PROVIDER_SWITCHED, event_data);
     }
 
     // 刷新托盘菜单，确保状态同步

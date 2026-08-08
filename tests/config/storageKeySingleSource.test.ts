@@ -49,7 +49,9 @@ function sourceFiles(dir: string, acc: string[] = []): string[] {
 }
 
 const files = sourceFiles(SRC).map((path) => ({
-  rel: path.slice(SRC.length + 1),
+  // 测试在 Windows 也必须用仓库内统一的 `/` 路径，否则 constants 自己会被误判为重复，
+  // `components/AppSwitcher.tsx` 也会因为反斜杠而找不到。
+  rel: path.slice(SRC.length + 1).replace(/\\/g, "/"),
   text: readFileSync(path, "utf-8"),
 }));
 

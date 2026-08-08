@@ -20,10 +20,14 @@ use std::str::FromStr;
 /// 3. Converts it to a Provider structure
 /// 4. Delegates to ProviderService for actual import
 /// 5. Optionally sets as current provider if enabled=true
+///
+/// 返回 `(provider_id, did_switch_current)` —— 第二个值表示「enabled=true 且已把
+/// 这个 provider 设成当前项」。调用方（命令层，有 AppHandle）据此广播
+/// `provider-switched` 事件；**本函数不发事件**（它是纯逻辑，测试里没有 AppHandle）。
 pub fn import_provider_from_deeplink(
     state: &AppState,
     request: DeepLinkImportRequest,
-) -> Result<String, AppError> {
+) -> Result<(String, bool), AppError> {
     // Verify this is a provider request
     if request.resource != "provider" {
         return Err(AppError::InvalidInput(format!(
@@ -109,11 +113,11 @@ pub fn import_provider_from_deeplink(
     //
     // 这里曾经有一段：`candidate` 命中 `is_managed` 时加个前导下划线。它防的是
     // 「用户给的名字让 id 撞上托管判据」⇒ 那条普通 provider 被当成托管的
-    // （列表里过滤掉、编辑删除被守卫拦下、而运营商区又不显示它）= 一条不可见也
+    // （列表里过滤掉、编辑删除被守卫拦下、而中转站区又不显示它）= 一条不可见也
     // 不可管理的孤儿。
     //
     // **那个问题已经从根上修掉了**：判据不再只看前缀，而是「前缀 + 我们真正会生成的
-    // 那两种形状」（16 位小写 hex，见 `operator::managed::is_managed`）。
+    // 那两种形状」（16 位小写 hex，见 `relay::managed::is_managed`）。
     // `loongport-<时间戳>` 的时间戳是 13 位十进制 ⇒ 压根不命中。
     //
     // ⚠️ 挡住它的是**长度**（13 ≠ 16），不是字符集 —— 十进制数字必然满足 hex
@@ -148,12 +152,15 @@ pub fn import_provider_from_deeplink(
     }
 
     // If enabled=true, set as current provider
-    if merged_request.enabled.unwrap_or(false) {
+    let did_switch_current = if merged_request.enabled.unwrap_or(false) {
         ProviderService::switch(state, app_type.clone(), &provider_id)?;
         log::info!("Provider '{provider_id}' set as current for {app_type:?}");
-    }
+        true
+    } else {
+        false
+    };
 
-    Ok(provider_id)
+    Ok((provider_id, did_switch_current))
 }
 
 /// Build a Provider structure from a deep link request

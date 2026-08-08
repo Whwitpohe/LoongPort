@@ -428,6 +428,29 @@
     "themeSystem": "System",
     "importExport": "SQL Import/Export",
     "importExportHint": "Import or export database SQL backups for migration or restore (import supports only backups exported by LoongPort).",
+    "ccSwitchImport": {
+      "title": "Import from cc-switch",
+      "description": "Copy cc-switch config into LoongPort in one click, leaving cc-switch untouched.",
+      "sectionTitle": "Import from cc-switch",
+      "sectionHint": "Copy cc-switch providers / MCP / skills / prompts over in one go; cc-switch itself is not modified.",
+      "button": "Import from cc-switch",
+      "noSource": "No cc-switch data found (~/.cc-switch/cc-switch.db)",
+      "loading": "Reading cc-switch data…",
+      "confirm": "Import now",
+      "importing": "Importing…",
+      "importFailed": "Import from cc-switch failed: {{message}}",
+      "statProviders": "Providers",
+      "statMcp": "MCP",
+      "statPrompts": "Prompts",
+      "statSkills": "Skills",
+      "skippedTitle": "These {{count}} are already managed by LoongPort and won't be imported again:",
+      "skippedAfterTitle": "These {{count}} are now managed by LoongPort — find them in the relay section:",
+      "mergedToRelayTitle": "These {{count}} share a site with a relay group and are managed there, so they won't be imported:",
+      "mergedToRelayAfterTitle": "These {{count}} share a site with a relay group — find them in the relay section:",
+      "importSuccess": "Import complete",
+      "reportSummary": "Imported {{providers}} providers, {{mcp}} MCP servers, {{prompts}} prompts, {{skills}} skills.",
+      "backupId": "A backup was created before import: {{backupId}}"
+    },
     "exportConfig": "Export SQL Backup",
     "selectConfigFile": "Select SQL File",
     "noFileSelected": "No configuration file selected.",
@@ -884,7 +907,8 @@
     "grokbuild": "Grok Build",
     "opencode": "OpenCode",
     "openclaw": "OpenClaw",
-    "hermes": "Hermes"
+    "hermes": "Hermes",
+    "more": "More"
   },
   "grokBuild": {
     "apiBackend": "API backend",
@@ -3027,8 +3051,12 @@
     "refresh": "Refresh"
   },
   "loongport": {
+    "sections": {
+      "relay": "Relay Stations",
+      "official": "Official API",
+      "other": "Others"
+    },
     "tierList": {
-      "title": "Providers & Tiers",
       "empty": "No relay site added yet",
       "addSite": "Add relay site",
       "refresh": "Refresh tiers & keys"
@@ -3051,7 +3079,7 @@
       "remove": "Remove this account (and its tiers)",
       "removeBlockedByCurrent": "One of its tiers is in use — switch to another tier first",
       "removeConfirmTitle": "Remove this account?",
-      "removeConfirmMessage": "This removes the login for “{{label}}” along with the {{count}} tier(s) it generated. Any balance stays with the provider — sign in again to use it.",
+      "removeConfirmMessage": "This removes the login for “{{label}}” along with the {{count}} tier(s) it generated. Any balance stays with the relay — sign in again to use it.",
       "removeConfirmMessageNeverLoggedIn": "This removes the “{{label}}” row along with the {{count}} tier(s) it generated. This account was never signed in, so you can add it again any time."
     },
     "health": {
@@ -3120,9 +3148,9 @@
       "readyWithKeys": "{{count}} tier(s) ready, {{keys}} key(s) created",
       "landedOnOtherPlatforms": "This account has {{count}} group(s), but none of them are for the current CLI. Switch to the matching tab above to see them.",
       "groupFailed": "{{group}}: {{reason}}",
-      "refreshed": "Refreshed {{operators}} provider(s), {{tiers}} tier(s) total",
+      "refreshed": "Refreshed {{relays}} relay(s), {{tiers}} tier(s) total",
       "refreshFailedWithReason": "Failed to refresh {{name}}: {{reason}}",
-      "refreshedWithKeys": "Refreshed {{operators}} operator(s), {{tiers}} tier(s) total, {{keys}} new key(s)"
+      "refreshedWithKeys": "Refreshed {{relays}} relay(s), {{tiers}} tier(s) total, {{keys}} new key(s)"
     },
     "switch": {
       "done": "Switched to {{name}}",
@@ -3160,7 +3188,8 @@
       "sponsorAddAnother": "{{count}} account(s) · add another"
     },
     "vendor": {
-      "add": "Add an official account (DeepSeek)",
+      "add": "Add an official account",
+      "empty": "No official account added yet",
       "remove": "Remove this official account (and its configs)",
       "removeConfirmTitle": "Remove this official account?",
       "removeConfirmMessage": "Removes the session and local key for “{{label}}”, along with the configs it generated for six platforms. The API key on the vendor's site is kept — sign in again to reuse it.",
@@ -3180,7 +3209,7 @@
       "companionDetail": "Image generation runs through the tool (MCP) bundled with LoongPort: say \"generate an image\" in codex / claude and it uses the tier selected here. Chat still goes through whichever tier you picked on the Codex page — the two are independent, so you can chat with DeepSeek or any other site.",
       "howTo": "Switching image tiers needs no CLI restart — the next generation uses the new one. Only the very first image tier requires a fresh terminal so codex picks up the tool.",
       "emptyTitle": "No image tiers yet",
-      "emptyBody": "Image tiers are detected automatically when you fetch keys: if your provider has a group that only serves gpt-image models, it shows up here. Your site may not offer image groups at all — then this page simply stays empty and nothing is added to your CLI config."
+      "emptyBody": "Image tiers are detected automatically when you fetch keys: if your relay has a group that only serves gpt-image models, it shows up here. Your site may not offer image groups at all — then this page simply stays empty and nothing is added to your CLI config."
     }
   }
 }

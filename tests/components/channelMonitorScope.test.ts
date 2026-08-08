@@ -1,15 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  filterChannelMonitorsByOperatorForApp,
+  filterChannelMonitorsByRelayForApp,
   filterChannelMonitorsForApp,
-} from "@/components/operator/channelMonitorScope";
-import type { ChannelMonitorInfo } from "@/lib/api/operator";
+} from "@/components/relay/channelMonitorScope";
+import type { ChannelMonitorInfo } from "@/lib/api/relay";
 
-function monitor(
-  monitorId: number,
-  provider: string,
-): ChannelMonitorInfo {
+function monitor(monitorId: number, provider: string): ChannelMonitorInfo {
   return {
     monitorId,
     name: `${provider}-${monitorId}`,
@@ -47,9 +44,9 @@ describe("filterChannelMonitorsForApp", () => {
 
   it("handles known provider aliases and keeps unknown app scopes hidden", () => {
     expect(
-      filterChannelMonitorsForApp("claude-desktop", [monitor(5, "Claude")])?.map(
-        (item) => item.monitorId,
-      ),
+      filterChannelMonitorsForApp("claude-desktop", [
+        monitor(5, "Claude"),
+      ])?.map((item) => item.monitorId),
     ).toEqual([5]);
     expect(
       filterChannelMonitorsForApp("grokbuild", [monitor(6, "xAI")])?.map(
@@ -65,7 +62,7 @@ describe("filterChannelMonitorsForApp", () => {
 
   it("filters every operator row with the same active app scope", () => {
     expect(
-      filterChannelMonitorsByOperatorForApp("claude", {
+      filterChannelMonitorsByRelayForApp("claude", {
         7: [monitor(7, "openai"), monitor(8, "anthropic")],
         9: [monitor(9, "anthropic")],
       }),

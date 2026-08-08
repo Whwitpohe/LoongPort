@@ -8,7 +8,7 @@
 设计文档、进度、spec 不在本仓，在同级的档案仓里（需要时用 `/add-dir` 单次挂载，别常驻）。
 维护者本机的具体布局见工作区那份 `CLAUDE.md`（不入任何仓）。
 
-**上一代实现是「参考不复用」**：它的 operator 层比现在这版复杂一个数量级（云同步边界、
+**上一代实现是「参考不复用」**：它的 relay 层比现在这版复杂一个数量级（云同步边界、
 多 app 展开、更多分支裁决），照搬会把这版简化的成果丢掉。查它的**结论**（实测记录、
 某个设计为什么那样分）是对的，照抄它的**实现**是错的；那边带行号的引用基于旧的子模块
 指针，引用前先 `grep -n` 复核。
@@ -28,7 +28,7 @@
    判据：新页面和旧页面放一起，看不出是两个人写的。
 3. **上游已有的模式**（数据流、命令命名、错误处理形状）→ 照它的形状写。
 4. 以上都没有 → 才新建，且**新建的东西尽量收在自己的目录里**
-   （`src/components/operator/`、`src-tauri/src/operator/`），别散进上游文件。
+   （`src/components/relay/`、`src-tauri/src/relay/`），别散进上游文件。
 
 ### 改上游文件时：改动面越小越好
 
@@ -65,7 +65,7 @@
 | 项目 | 许可证 | 我们能做什么 |
 |---|---|---|
 | **cc-switch**（本仓 fork 源） | **MIT** | **可自由复用代码** —— §一「能复用就复用」讲的就是它 |
-| **sub2api**（对接的运营商后端） | **LGPL-3.0 或更高** | **只能读，不能抄代码进本仓** |
+| **sub2api**（对接的中转站后端） | **LGPL-3.0 或更高** | **只能读，不能抄代码进本仓** |
 
 **为什么读它没问题**：我们与 sub2api 的关系是**HTTP 客户端**，不链接、不包含它的代码 ——
 跟浏览器访问一个 LGPL 网站一样，不构成衍生作品。
@@ -88,7 +88,8 @@
 ### 查 sub2api 的行为：先找它的 Go 源码，别逆推线上 JS
 
 对接 sub2api（端点、字段、鉴权、计费规则）时，**优先看 sub2api 后端的 Go 源码**
-（开源，`Wei-Shaw/sub2api`；维护者本机已 clone，路径见工作区那份 CLAUDE.md）。
+（开源，`Wei-Shaw/sub2api`；源码在本机 design 仓的 `upstream/sub2api` 子模块，
+路径见工作区那份 CLAUDE.md —— 维护者本机布局唯一源）。
 它是契约本身，比读线上 SPA 的 minified bundle、比历史实测记录都权威一个量级 ——
 能给到「哪个 handler 第几行填了哪个字段」级别的证据。
 
@@ -121,10 +122,10 @@
 ## 三、LoongPort 自己的代码在哪
 
 ```
-src-tauri/src/operator/     ← 运营商链路（api / creds / login / provision / chatgpt_app）
-src-tauri/src/commands/operator.rs
-src/components/operator/    ← 前端面板
-src/lib/api/operator.ts     ← 前端类型与 invoke 封装
+src-tauri/src/relay/     ← 中转站链路（api / creds / login / provision / chatgpt_app）
+src-tauri/src/commands/relay.rs
+src/components/relay/    ← 前端面板
+src/lib/api/relay.ts     ← 前端类型与 invoke 封装
 ```
 
 碰这几处之外的文件时，先问一句「这是在改上游吗、改动面能不能更小」。
@@ -132,7 +133,7 @@ src/lib/api/operator.ts     ← 前端类型与 invoke 封装
 ### 这是 fork，不是「把 cc-switch 当依赖引入」
 
 16.9 万行 Rust 里我们自己写的只有 **5621 行（3.3%）** —— 上游代码是**躯干**，我们在它身上
-加东西。所以别把它想成 `import cc_switch`：没有那层边界，`operator/` 与上游代码在同一个
+加东西。所以别把它想成 `import cc_switch`：没有那层边界，`relay/` 与上游代码在同一个
 crate、共享 `AppState`、共用它的 `ProviderService` / `write_live_snapshot` / deeplink 构造。
 
 **这正是 §一「能复用就复用」的物理基础**，也是「改上游文件要改动面最小」的原因。
@@ -182,7 +183,7 @@ pub fn is_official_proxy_provider_id(id: &str) -> bool { /* 认新旧两个 */ }
 | 闸 | 守什么 |
 |---|---|
 | `deeplink::scheme_consistency_tests` | `APP_SCHEME` 必须同时在 `Info.plist` 与 `tauri.conf.json` 里 |
-| `operator::managed::prefix_matches_the_frontend_copy` | `MANAGED_ID_PREFIX` 必须与 `src/config/constants.ts` 一致 |
+| `relay::managed::prefix_matches_the_frontend_copy` | `MANAGED_ID_PREFIX` 必须与 `src/config/constants.ts` 一致 |
 
 **新增任何「跨语言/跨文件的同一事实」时，一并加闸** —— 否则它迟早分叉，
 而分叉那天没人会收到通知。已知还有一处同类：`OFFICIAL_WEBSITE`
@@ -196,15 +197,52 @@ pub fn is_official_proxy_provider_id(id: &str) -> bool { /* 认新旧两个 */ }
 cd src-tauri
 cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
 cd ..
-npx tsc --noEmit && npx prettier --check "src/**/*.{js,jsx,ts,tsx,css,json}" && npx vitest run
+npx tsc --noEmit && npx prettier --check "{src,tests}/**/*.{js,jsx,ts,tsx,css,json,html}" && npx vitest run
 ```
 
 两个坑（都踩过）：
 
 - **`cargo` 不在默认 PATH 里**，先 `export PATH="$HOME/.cargo/bin:$PATH"`，
   否则拿到的是 `command not found` 而非真实结果。
-- **prettier 要用 CI 那个 glob**（`"src/**/*.{js,jsx,ts,tsx,css,json}"`）。
-  直接 `prettier --check src` 会把 `src/index.html` 也扫进来报 warn，那个不在闸内。
+- **prettier 的 glob 必须与 CI 一致**（`"{src,tests}/**/*.{js,jsx,ts,tsx,css,json,html}"`，
+  即 `package.json` 的 `format:check`）。别缩成 `src/**` —— 那会漏掉
+  `tests/` 与 `.html`，本地全绿而 CI 红（2026-08-07 实测：`tests/components/…`
+  的格式问题本地闸从来没扫到，合并时才被线上拦下）。直接跑
+  `pnpm format:check` 最省事，别手写 glob。
 
 **`cargo test` / `clippy` 全绿不代表能打包** —— CI 的 Backend Checks 不跑 `tauri build`，
 Tauri 的 npm↔crate 版本校验只在打包时触发（已踩过，见 `ca82a908`）。
+
+### 合并到远程 main：走 PR，且要过线上 4 个必需检查
+
+改动要进 `main` 一律走 PR（`gh pr create`），不要直接 push 到 `main`。
+**线上闸门是 4 个必需检查**（`Frontend Checks` + 三平台 `Backend Checks`，
+内容就是上面那六道闸，见 `.github/workflows/ci.yml`）—— 本地全绿不代表远程会绿，
+外部改动（fork PR）的验证点只有它。合并方式与仓库惯例一致用 merge commit
+（dependabot 的自动合才是 squash，见下）。
+
+标准流程（本地六道闸全过之后）：
+
+```
+git fetch origin main && git checkout -b fix/xxx origin/main
+# ...改动 + 本地六道闸...
+git push -u origin fix/xxx
+gh pr create --base main --head fix/xxx --title "..." --body-file pr_body.md
+gh pr merge fix/xxx --auto --merge    # 等 4 个必需检查全绿后自动合
+```
+
+`--auto` 只负责"检查绿了自动合"，**一道闸都没省**：main 的分支保护把 4 个
+必需检查设为 required，任何一个不过都不会合。`--merge`（merge commit）是
+人工 PR 的惯例；`dependabot-auto-merge.yml` 里那条用 `--squash` 是给
+dependabot 的，别照搬。PR 模板在 `.github/pull_request_template.md`。
+**main 只接受通过 PR 的改动** —— 这条与 design 仓无关（流程知识跟着代码走，
+不抄进档案仓，见全局准则 §1.4 唯一数据源）。
+
+### 打包与产物归档：唯一源在 LOONGPORT.md，这里只指路
+
+打包命令、DMG 坑、产物路径、归档约定（mac 落 `~/下载`、windows 落 `D:\`）
+**全部收在 [LOONGPORT.md](LOONGPORT.md) 的打包章节**，这里是**唯一一份**，
+别在 CLAUDE.md 里复制第二遍（见全局准则 §1.4）。要打包时去读那份。
+
+唯一属于 CLAUDE.md（维护视角）的是上面那条警告：**`cargo test` / `clippy` 全绿
+不代表能打包** —— Tauri 的 npm↔crate 版本校验只在打包时触发。

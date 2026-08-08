@@ -4,8 +4,8 @@ import {
   loadAvailableGroupCache,
   mergeAvailableGroupRefreshes,
   saveAvailableGroupCache,
-} from "@/components/operator/availableGroupCache";
-import type { AvailableGroupInfo, ProvisionSummary } from "@/lib/api/operator";
+} from "@/components/relay/availableGroupCache";
+import type { AvailableGroupInfo, ProvisionSummary } from "@/lib/api/relay";
 
 function group(
   groupId: number,

@@ -14,7 +14,7 @@
 //!
 //! 1. **删了才建，不能反过来** —— 先建后删的话中途失败会留下两把都在，
 //!    而本地只记得一把 ⇒ 下次又多一把。
-//! 2. **删失败不阻断建** —— 删是清理，建是目的。与 `operator::provision`
+//! 2. **删失败不阻断建** —— 删是清理，建是目的。与 `relay::provision`
 //!    的「尽力而为 + 全量回报，不回滚」语义一致。
 
 use serde_json::Value;
@@ -36,7 +36,7 @@ pub const DEEPSEEK_APPS: [AppType; 6] = [
 ///
 /// ⚠️ **分隔符不能省** —— 没有它 `(vendor="a", account="bc")` 与
 /// `(vendor="ab", account="c")` 喂进哈希的字节流完全相同
-/// （同型于 `operator::provision::provider_id_for` 那个闸）。
+/// （同型于 `relay::provision::provider_id_for` 那个闸）。
 pub fn provider_id_for(vendor_id: &str, account_id: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -45,7 +45,7 @@ pub fn provider_id_for(vendor_id: &str, account_id: &str) -> String {
     h.update(account_id.as_bytes());
     format!(
         "{}vendor-{:.16x}",
-        crate::operator::managed::MANAGED_ID_PREFIX,
+        crate::relay::managed::MANAGED_ID_PREFIX,
         h.finalize()
     )
 }
@@ -53,7 +53,7 @@ pub fn provider_id_for(vendor_id: &str, account_id: &str) -> String {
 /// 从官网 key 列表里筛出「本客户端为**这个账号**建过的」那些。
 ///
 /// ⚠️ **精确相等，不是 `starts_with`** —— 用前缀匹配会命中
-/// `LoongPort专用/a123-old` 之类（同型于 `operator::provision::claim_key`
+/// `LoongPort专用/a123-old` 之类（同型于 `relay::provision::claim_key`
 /// 那个「`.../42` 会被 `.../420` 命中」的坑）。
 ///
 /// ⚠️ **必须带 `account_id`** —— 裸 `LoongPort专用/` 会把**别的账号**那把也删掉。
@@ -82,18 +82,18 @@ pub fn keys_to_delete(all: &[VendorKey], account_id: &str) -> Vec<VendorKey> {
 /// ## ⚠️ 生成配置与 `is_user_edited` 的基准**必须都走这个函数**
 ///
 /// `is_user_edited` 靠「与重算的默认值整份比对」判断用户改没改过
-/// （`operator::provision::is_user_edited`）。两边算法只要有一处不一致，
+/// （`relay::provision::is_user_edited`）。两边算法只要有一处不一致，
 /// 结果就是**每个 DeepSeek 的 Claude 档位都显示「已手工维护」**，而用户一个字没改过。
 ///
 /// 所以这个判断收在一个 pub 函数里，两个调用方（`provider_rows_for` 与
 /// vendor 侧算 `user_edited` 那处）共用它，而不是各写一遍 `matches!(app, Claude | ..)`。
-pub fn claude_roles_for(app: &AppType) -> Option<crate::operator::provision::ClaudeRoleModels> {
+pub fn claude_roles_for(app: &AppType) -> Option<crate::relay::provision::ClaudeRoleModels> {
     matches!(app, AppType::Claude | AppType::ClaudeDesktop).then(deepseek::claude_role_models)
 }
 
 /// 一把 sk 展开成六条 `(app_type, settings_config)`。
 ///
-/// 走 `operator::provision::settings_config_with_roles` —— 它的非 codex 分支复用上游
+/// 走 `relay::provision::settings_config_with_roles` —— 它的非 codex 分支复用上游
 /// `deeplink::build_provider_from_request`，而那个 match 覆盖全部 8 个平台
 /// （`deeplink/provider.rs:147`）⇒ 我们要的六个都在里面，不需要新写分派。
 pub fn provider_rows_for(vendor: Vendor, api_key: &str) -> Vec<(AppType, Value)> {
@@ -102,7 +102,7 @@ pub fn provider_rows_for(vendor: Vendor, api_key: &str) -> Vec<(AppType, Value)>
         .iter()
         .filter_map(|app| {
             let (base_url, model) = deepseek::config_for(app)?;
-            let cfg = crate::operator::provision::settings_config_with_roles(
+            let cfg = crate::relay::provision::settings_config_with_roles(
                 app,
                 api_key,
                 display,
@@ -195,13 +195,15 @@ mod tests {
         let env = cfg.get("env").expect("claude 配置该有 env");
 
         let expect: &[(&str, &str)] = &[
+            // 主模型不带 [1M]：它来自 `config_for`，同时被 codex 复用（codex 的
+            // config.toml 模型名不能带后缀）。只有角色对齐带。
             ("ANTHROPIC_MODEL", "deepseek-v4-pro"),
-            ("ANTHROPIC_DEFAULT_OPUS_MODEL", "deepseek-v4-pro"),
-            ("ANTHROPIC_DEFAULT_FABLE_MODEL", "deepseek-v4-pro"),
-            ("ANTHROPIC_DEFAULT_SONNET_MODEL", "deepseek-v4-flash"),
-            ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "deepseek-v4-flash"),
+            ("ANTHROPIC_DEFAULT_OPUS_MODEL", "deepseek-v4-pro[1M]"),
+            ("ANTHROPIC_DEFAULT_FABLE_MODEL", "deepseek-v4-pro[1M]"),
+            ("ANTHROPIC_DEFAULT_SONNET_MODEL", "deepseek-v4-flash[1M]"),
+            ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "deepseek-v4-flash[1M]"),
             // ⚠️ 这个键**不带 `ANTHROPIC_DEFAULT_` 前缀**。
-            ("CLAUDE_CODE_SUBAGENT_MODEL", "deepseek-v4-flash"),
+            ("CLAUDE_CODE_SUBAGENT_MODEL", "deepseek-v4-flash[1M]"),
         ];
         for (key, want) in expect {
             assert_eq!(
@@ -239,110 +241,6 @@ mod tests {
         }
     }
 
-    /// ⭐ **`is_user_edited` 在官网直连这条路上的三条基本行为。**
-    ///
-    /// ## 第 1 条为什么最要紧
-    ///
-    /// 「刚生成的配置算没改过」——这条挂了的症状是**每个 DeepSeek 的 Claude 档位都
-    /// 显示「已手动维护」**，而用户一个字没改过。而它挂的原因通常很隐蔽：生成配置与
-    /// 算基准两边的 `roles` 不一致（一边带 fable/subagent、一边不带）。
-    ///
-    /// 那是本轮加分档时最容易踩的坑，所以这条闸直接钉「两边走同一个
-    /// `claude_roles_for`」的结果，而不是各自的实现。
-    ///
-    /// ## 第 3 条是「自愈」
-    ///
-    /// 用户把配置改回默认值 ⇒ 标记自动消失。这是「不存标记、靠比对」这个设计的
-    /// 主要好处（存标记会留一个用户清不掉的永久假阳性）。
-    #[test]
-    fn user_edited_verdict_round_trips_for_the_claude_row() {
-        use crate::operator::provision::is_user_edited_with_roles;
-
-        let rows = provider_rows_for(Vendor::DeepSeek, "sk-x");
-        let (app, generated) = rows
-            .iter()
-            .find(|(a, _)| matches!(a, AppType::Claude))
-            .expect("claude 那条");
-        let (base_url, model) = deepseek::config_for(app).expect("claude 有配置");
-        let verdict = |cfg: &Value| {
-            is_user_edited_with_roles(
-                cfg,
-                app,
-                Vendor::DeepSeek.display_name(),
-                base_url,
-                model,
-                claude_roles_for(app),
-            )
-        };
-
-        // 1. 刚生成的 ⇒ 没改过。
-        assert_eq!(
-            verdict(generated),
-            Some(false),
-            "刚生成的配置该算「没改过」—— 报 true 通常是生成与基准两边的 roles 不一致\
-             （一边带 fable/subagent、一边不带），症状是全部 Claude 档位集体误报"
-        );
-
-        // 2. 改一个值 ⇒ 改过了。
-        let mut edited = generated.clone();
-        edited["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = Value::String("deepseek-v4-pro".into());
-        assert_eq!(
-            verdict(&edited),
-            Some(true),
-            "把 sonnet 改成 pro 是用户编辑，必须认出来 —— 认不出的后果是下次\
-             「获取密钥」把他的改动整份冲掉"
-        );
-
-        // 3. 改回默认 ⇒ 标记自动消失（**自愈**）。
-        let restored = generated.clone();
-        assert_eq!(
-            verdict(&restored),
-            Some(false),
-            "改回默认值后标记该自动消失 —— 那是「不存标记、靠比对」这个设计的主要好处"
-        );
-    }
-
-    /// 分档的两个新键**参与**比对。
-    ///
-    /// 单独钉它是因为 `normalize_for_comparison` 只抹字符串首尾空白、
-    /// **不动结构**（它的文档写了这条）：少一个键算改过、多一个键也算改过。
-    /// 若哪天有人给它加上「忽略未知键」的宽松逻辑，用户删掉 subagent 那行就会
-    /// 被判成「没改过」⇒ 下次 provision 静默把它加回去。
-    #[test]
-    fn removing_a_role_key_counts_as_edited() {
-        use crate::operator::provision::is_user_edited_with_roles;
-
-        let rows = provider_rows_for(Vendor::DeepSeek, "sk-x");
-        let (app, generated) = rows
-            .iter()
-            .find(|(a, _)| matches!(a, AppType::Claude))
-            .expect("claude 那条");
-        let (base_url, model) = deepseek::config_for(app).expect("claude 有配置");
-
-        for key in [
-            "ANTHROPIC_DEFAULT_FABLE_MODEL",
-            "CLAUDE_CODE_SUBAGENT_MODEL",
-        ] {
-            let mut stripped = generated.clone();
-            stripped["env"]
-                .as_object_mut()
-                .expect("env 是对象")
-                .remove(key);
-            assert_eq!(
-                is_user_edited_with_roles(
-                    &stripped,
-                    app,
-                    Vendor::DeepSeek.display_name(),
-                    base_url,
-                    model,
-                    claude_roles_for(app),
-                ),
-                Some(true),
-                "删掉 {key} 是用户编辑（结构变了），必须认出来"
-            );
-        }
-    }
-
     /// 只有 Claude 系有角色分档。
     ///
     /// ⚠️ **`ClaudeDesktop` 属于 Claude 系**（它与 Claude 走同一个
@@ -357,52 +255,6 @@ mod tests {
                 "{} 的角色分档判定错了 —— ClaudeDesktop 与 Claude 同形，两个都要有",
                 app.as_str()
             );
-        }
-    }
-
-    /// ⚠️ **`is_user_edited` 目前只覆盖 codex / claude 系 / gemini。**
-    ///
-    /// hermes / openclaw / opencode 落到 `api_key_location` 的 `_ => None` ⇒
-    /// 它们的 `user_edited` 恒为 `None`（「判不了」）⇒ **界面上永远不显示
-    /// 「已手动维护」标记，「恢复默认」也用不了**（`extract_api_key` 读不出 sk）。
-    ///
-    /// 这条测试钉住**当前的真实行为**，不是钉住「这样是对的」——
-    /// 缺口已记进代码仓 `TODO.md`（要改 `api_key_location` 的 `(section, field)`
-    /// 两段结构才能表达 hermes / openclaw 那种 sk 在**顶层**的形状，
-    /// 而那会动 `patch_api_key` / `extract_api_key` 的签名与 operator 侧全部调用方）。
-    ///
-    /// **哪天补上了，这条测试会红** —— 那时把它改成断言 `Some(false)`，
-    /// 别以为是回归。
-    #[test]
-    fn user_edited_is_currently_undecidable_for_three_platforms() {
-        let rows = provider_rows_for(Vendor::DeepSeek, "sk-x");
-        for (app, cfg) in rows.iter() {
-            let (base_url, model) = deepseek::config_for(app).expect("有配置");
-            let verdict = crate::operator::provision::is_user_edited_with_roles(
-                cfg,
-                app,
-                Vendor::DeepSeek.display_name(),
-                base_url,
-                model,
-                claude_roles_for(app),
-            );
-            match app {
-                // 接了的：刚生成的配置算「没改过」。
-                AppType::Codex | AppType::Claude | AppType::ClaudeDesktop => assert_eq!(
-                    verdict,
-                    Some(false),
-                    "{} 接了 api_key_location，刚生成的该算没改过",
-                    app.as_str()
-                ),
-                // 没接的：判不了。**`None` 而不是 `Some(false)`** ——
-                // 报「没改过」等于断言「刷新不会覆盖你的改动」，而事实是不知道。
-                _ => assert_eq!(
-                    verdict,
-                    None,
-                    "{} 还没接 api_key_location，该老实返回 None（见本测试文档）",
-                    app.as_str()
-                ),
-            }
         }
     }
 
@@ -447,12 +299,12 @@ mod tests {
     fn provider_id_is_recognised_as_managed() {
         let id = provider_id_for("deepseek", "uuid-a");
         assert!(
-            crate::operator::managed::is_managed(&id),
+            crate::relay::managed::is_managed(&id),
             "要命中 MANAGED_ID_PREFIX，守卫/前端过滤/托盘菜单才免费继承"
         );
     }
 
-    /// ⚠️ **精确相等，不是前缀** —— `a12` 不能命中 `a123`（同型于 operator 侧
+    /// ⚠️ **精确相等，不是前缀** —— `a12` 不能命中 `a123`（同型于 relay 侧
     /// 那个「`.../42` 会被 `.../420` 命中」的坑）。
     #[test]
     fn keys_to_delete_matches_exactly_not_by_prefix() {

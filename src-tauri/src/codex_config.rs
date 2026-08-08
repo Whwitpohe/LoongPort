@@ -1571,12 +1571,18 @@ pub fn write_codex_provider_live_with_catalog(
     auth: &Value,
     config_text: Option<&str>,
     profile: CodexCatalogToolProfile,
+    force_preserve_auth: bool,
 ) -> Result<(), AppError> {
     let prepared_config = config_text
         .map(|text| prepare_codex_config_text_with_model_catalog(settings, text, profile))
         .transpose()?;
 
-    write_codex_live_for_provider(category, auth, prepared_config.as_deref())
+    write_codex_live_for_provider(
+        category,
+        auth,
+        prepared_config.as_deref(),
+        force_preserve_auth,
+    )
 }
 
 /// Extract a provider-scoped `experimental_bearer_token` from Codex `config.toml`.
@@ -2076,6 +2082,7 @@ pub fn write_codex_live_for_provider(
     category: Option<&str>,
     auth: &Value,
     config_text: Option<&str>,
+    force_preserve_auth: bool,
 ) -> Result<(), AppError> {
     let unified_official_config =
         if category == Some("official") && crate::settings::unify_codex_session_history() {
@@ -2089,6 +2096,7 @@ pub fn write_codex_live_for_provider(
 
     let should_write_auth = (category == Some("official") && codex_auth_has_login_material(auth))
         || (category != Some("official")
+            && !force_preserve_auth
             && !crate::settings::preserve_codex_official_auth_on_switch());
 
     if should_write_auth {

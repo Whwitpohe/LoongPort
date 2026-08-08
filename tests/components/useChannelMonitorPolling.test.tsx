@@ -1,11 +1,11 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { balanceRowsKey } from "@/components/operator/balanceRowsKey";
+import { balanceRowsKey } from "@/components/relay/balanceRowsKey";
 import {
   CHANNEL_MONITOR_POLL_INTERVAL_MS,
   useChannelMonitorPolling,
-} from "@/components/operator/useChannelMonitorPolling";
+} from "@/components/relay/useChannelMonitorPolling";
 
 describe("useChannelMonitorPolling", () => {
   beforeEach(() => {

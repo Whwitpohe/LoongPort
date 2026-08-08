@@ -9,7 +9,7 @@ import vm from "node:vm";
  *
  * ## 为什么需要这条测试
  *
- * `src-tauri/src/operator/login.rs` 生成的是**另一门语言的代码**，而 Rust 侧
+ * `src-tauri/src/relay/login.rs` 生成的是**另一门语言的代码**，而 Rust 侧
  * 那批测试全是字符串断言 —— 它们能验「该出现的出现了」，验不了「这段 JS
  * 跑得起来」。
  *
@@ -114,6 +114,8 @@ interface Trace {
    * 而「按元素身份记」的全部意义就是那时还能再填一次。
    */
   remountPromoField: () => void;
+  setStorage: (key: string, value: string) => void;
+  flushTimeouts: () => void;
 }
 
 /**
@@ -123,7 +125,11 @@ interface Trace {
  * `ALLOWED_ORIGIN` 一致 —— 否则那道 origin 守卫会让脚本直接早退，
  * 测试就什么都没验到（那是个很容易自欺的失败模式）。
  */
-function runScript(js: string, opts: { promoFieldExists: boolean }): Trace {
+function runScript(
+  js: string,
+  opts: { promoFieldExists: boolean; deferTimeouts?: boolean },
+): Trace {
+  const pendingTimeouts: Array<() => void> = [];
   const trace: Trace = {
     promoValue: null,
     emailValue: null,
@@ -133,6 +139,10 @@ function runScript(js: string, opts: { promoFieldExists: boolean }): Trace {
     intervalCallback: null,
     promoEl: null,
     remountPromoField: () => {},
+    setStorage: () => {},
+    flushTimeouts: () => {
+      while (pendingTimeouts.length > 0) pendingTimeouts.shift()!();
+    },
   };
 
   const makeInput = (onSet: (v: string) => void) => ({
@@ -180,7 +190,8 @@ function runScript(js: string, opts: { promoFieldExists: boolean }): Trace {
     },
     clearInterval: () => {},
     setTimeout: (fn: () => void) => {
-      fn();
+      if (opts.deferTimeouts) pendingTimeouts.push(fn);
+      else fn();
       return 1;
     },
     TextEncoder,
@@ -211,6 +222,10 @@ function runScript(js: string, opts: { promoFieldExists: boolean }): Trace {
   };
 
   vm.runInNewContext(js, sandbox, { timeout: 5000 });
+  trace.setStorage = (key, value) =>
+    (
+      sandbox.window.localStorage as { setItem(k: string, v: string): void }
+    ).setItem(key, value);
   return trace;
 }
 
@@ -322,6 +337,32 @@ describe.runIf(scriptsAvailable())("登录注入脚本能真的执行", () => {
       // 重登标识要填进邮箱框（导出时传的是 me@x.com）。
       expect(trace.emailValue, `${name}: 该预填登录标识`).toBe("me@x.com");
     }
+  });
+
+  it("access token 先落盘时会等 refresh token 一起回传", () => {
+    const trace = runScript(read("no-promo"), {
+      promoFieldExists: false,
+      deferTimeouts: true,
+    });
+
+    trace.setStorage("auth_token", "access-1");
+    expect(trace.navigatedTo, "收敛窗口结束前不能抢跑").toBeNull();
+    trace.setStorage("refresh_token", "refresh-1");
+    trace.setStorage("token_expires_at", "1800000000000");
+    trace.flushTimeouts();
+
+    const encoded = new URL(trace.navigatedTo!).searchParams.get("d")!;
+    const payload = JSON.parse(
+      Buffer.from(
+        encoded.replace(/-/g, "+").replace(/_/g, "/"),
+        "base64",
+      ).toString("utf8"),
+    );
+    expect(payload).toEqual({
+      auth_token: "access-1",
+      refresh_token: "refresh-1",
+      token_expires_at: "1800000000000",
+    });
   });
 
   /** aff 码那段（两种变体都带）要真的写进 localStorage。 */

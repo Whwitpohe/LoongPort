@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   calculateActualRateMultiplier,
   formatRateMultiplier,
-} from "@/components/operator/tierPricing";
+} from "@/components/relay/tierPricing";
 
 describe("运营商实际倍率", () => {
   it("只除充值到账比例，不计算手续费", () => {

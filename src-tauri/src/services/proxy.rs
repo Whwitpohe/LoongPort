@@ -2546,6 +2546,7 @@ impl ProxyService {
                     auth,
                     config_str,
                     profile,
+                    crate::relay::is_managed(&provider.id),
                 )
                 .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
             }
@@ -2903,6 +2904,7 @@ impl ProxyService {
             auth,
             config_str,
             profile,
+            crate::relay::is_managed(&provider.id),
         )
         .map_err(|e| format!("写入 Codex 配置失败: {e}"))
     }

@@ -1,4 +1,5 @@
 export type { AppId } from "./types";
+export * from "./events";
 export { providersApi, universalProvidersApi } from "./providers";
 export { settingsApi } from "./settings";
 export { backupsApi } from "./settings";
@@ -30,13 +31,20 @@ export type {
   ManagedAuthStatus,
   ManagedAuthDeviceCodeResponse,
 } from "./auth";
-export { operatorApi } from "./operator";
+export { relayApi } from "./relay";
+export { ccSwitchImportApi } from "./ccSwitchImport";
 export type {
-  OperatorStatus,
+  CcSwitchImportPreview,
+  CcSwitchImportReport,
+  SkippedProvider,
+  ProviderPlan,
+} from "./ccSwitchImport";
+export type {
+  RelayStatus,
   SiteInfo,
   ProbeResult,
   TierInfo,
   ProvisionSummary,
   SwitchTierResult,
-  OperatorBalance,
-} from "./operator";
+  RelayBalance,
+} from "./relay";

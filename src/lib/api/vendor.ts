@@ -5,7 +5,7 @@ import type { AppId } from "./types";
 /**
  * 一个已添加的官网直连账号（`loongport_vendor` 的一行）。
  *
- * **只读本地、不发网络**（与 `listOperators` 同一条契约）—— 首屏不卡在网络上。
+ * **只读本地、不发网络**（与 `listRelays` 同一条契约）—— 首屏不卡在网络上。
  * 余额走 `vendorApi.balance`，由前端渲染完再异步填。
  *
  * ⚠️ **不含 `authToken` 与 `apiKey`** —— 凭据不出 Rust 侧。给前端明文 sk 只会让
@@ -43,18 +43,29 @@ export interface VendorAccountRow {
    *
    * 由后端派生（`sha256(vendorId + "/" + accountId)`）——
    * **前端算不出来**：DTO 有意不给 accountId，也没有 sha256。
-   * 官网行的「当前在用」高亮靠它与 `providersApi.getCurrent(appId)` 比。
+   *
+   * ⚠️ **不再用它判「当前在用」** —— 那件事改由下面的 `isCurrent`（后端现算）
+   * 表达。它只在「编辑 / 恢复默认 / 切换」时用（这几条命令吃 providerId）。
    *
    * 空串 = 还没登录过（没有 accountId 就派生不出 id）。
    */
   providerId: string;
+  /**
+   * **当前 tab 那个 app** 下，这一行是不是正在用的那个。
+   *
+   * 由后端按 `appId` 现算（判据与中转站档位的 `isCurrent` 同源 —— 都是
+   * `providers` 表的 `is_current`）。**前端不自己维护、也不拿它跟别的值比较**。
+   * 所以 DeepSeek 官网组与中转站档位 / 手工 provider 共享同一份互斥：
+   * 一个 app 下永远只有一个「在用」。
+   */
+  isCurrent: boolean;
   /**
    * **当前 tab 那个平台**的配置是不是被用户改过（`vendorApi.list` 的 `appId`）。
    *
    * ⚠️ **按平台算，不是整行一个值** —— 一行背后六条 provider 记录各自能被独立编辑。
    *
    * `null` = 判不了（没 provision 过 / 这个平台不适用）。**`null` 时不显示标记** ——
-   * 与 operator 的 `TierInfo.userEdited` 同一条原则：不知道就别断言。
+   * 与 relay 的 `TierInfo.userEdited` 同一条原则：不知道就别断言。
    *
    * 后端不存这个标记，靠与默认配置整份比对现算 ⇒ 用户把配置改回默认，标记会自动消失。
    */
@@ -75,16 +86,6 @@ export interface VendorProvisionSummary {
    */
   keyCreated: boolean;
 }
-
-/**
- * 登录窗凭据回传解析失败的事件名。**与 Rust 侧
- * `commands::vendor::LOGIN_ERROR_EVENT` 必须逐字一致**，payload 是错误字符串。
- *
- * ⚠️ 与 operator 那条 `"operator-login-error"` **有意不同**（两条链路的登录窗各自独立，
- * 混用会让一边的错误弹在另一边的界面上）。定在这一层的理由同 `PURCHASE_CLOSED_EVENT`：
- * 对不上的后果完全静默 —— 编译过、测试绿、只是登录失败永远没有提示。
- */
-export const VENDOR_LOGIN_ERROR_EVENT = "vendor-login-error";
 
 /**
  * 官网行会出现在哪些 tab。
@@ -179,7 +180,7 @@ export const vendorApi = {
    * （没有钱包 / 金额解不动），**不是 0**。
    *
    * 失败要 catch 掉并把那一行留空，不要弹 toast —— 余额是附加信息
-   * （与 operator 侧同一条纪律）。
+   * （与 relay 侧同一条纪律）。
    */
   balance: (rowId: number): Promise<string | null> =>
     invoke("vendor_balance", { rowId }),

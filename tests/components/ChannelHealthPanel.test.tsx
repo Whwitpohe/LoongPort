@@ -1,8 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import { vi } from "vitest";
 
-import { ChannelHealthPanel } from "@/components/operator/ChannelHealthPanel";
-import type { ChannelMonitorInfo } from "@/lib/api/operator";
+import { ChannelHealthPanel } from "@/components/relay/ChannelHealthPanel";
+import type { ChannelMonitorInfo } from "@/lib/api/relay";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({

@@ -5,7 +5,7 @@ import zhTW from "@/i18n/locales/zh-TW.json";
 import zh from "@/i18n/locales/zh.json";
 
 /**
- * 「运营商 × 分组」页用到的全部 i18n key（`loongport.*` 命名空间）。
+ * 「中转站 × 分组」页用到的全部 i18n key（`loongport.*` 命名空间）。
  *
  * ## 为什么必须有这条测试
  *
@@ -18,7 +18,10 @@ import zh from "@/i18n/locales/zh.json";
  * 照 `toolManagementLocales.test.ts` / `xaiOauthLocales.test.ts` 的形状写（仓库已有惯例）。
  */
 const requiredKeys = [
-  "tierList.title",
+  // 三大块的区块标题。
+  "sections.relay",
+  "sections.official",
+  "sections.other",
   "tierList.empty",
   "tierList.addSite",
   "tierList.refresh",
@@ -44,7 +47,7 @@ const requiredKeys = [
   "row.removeConfirmTitle",
   "row.removeConfirmMessage",
   // 从没登录过的行走另一句 —— 无条件那句会说错两处（不存在的登录态、没充过的
-  // 余额）。判据见 `components/operator/removeConfirmWording.ts`。
+  // 余额）。判据见 `components/relay/removeConfirmWording.ts`。
   "row.removeConfirmMessageNeverLoggedIn",
   // 「分组都落在别的平台了」—— 缺了它用户会一遍遍点「获取密钥」，
   // 而那条路对他永远不会有结果（债 11）。
@@ -102,7 +105,7 @@ const requiredKeys = [
   "official.done",
   "official.doneWithBackup",
   // 按语义分组而不按宿主组件命名 —— 这几条原本写在已删的 `OperatorPanel` 里，
-  // 因为分组是语义的，清那个页面时 `OperatorSection` 直接接着用，不用重命名一轮。
+  // 因为分组是语义的，清那个页面时 `RelaySection` 直接接着用，不用重命名一轮。
   // 「添加中转站」弹窗。首启那次它就是整个第一屏，退化成 key 名等于让新用户
   // 对着一屏看不懂的东西输域名。
   "addSite.firstRunTitle",
@@ -153,6 +156,8 @@ const requiredKeys = [
   // - `openKeyPage` —— 超上限时那个「去官网删」的入口（spec §4.3 要求指路而不是
   //   只说不允许），它是个 toast action 的 label，退化成 key 名按钮就没法读
   "vendor.add",
+  // 官方 API 块的空态占位。
+  "vendor.empty",
   "vendor.remove",
   "vendor.removeConfirmTitle",
   "vendor.removeConfirmMessage",

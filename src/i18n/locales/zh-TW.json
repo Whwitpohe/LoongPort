@@ -428,6 +428,29 @@
     "themeSystem": "跟隨系統",
     "importExport": "SQL 匯入匯出",
     "importExportHint": "匯入/匯出資料庫 SQL 備份（僅支援匯入由 LoongPort 匯出的備份），便於備份或遷移。",
+    "ccSwitchImport": {
+      "title": "從 cc-switch 匯入",
+      "description": "一鍵把 cc-switch 的設定複製到 LoongPort，不動 cc-switch 那邊。",
+      "sectionTitle": "從 cc-switch 匯入",
+      "sectionHint": "把 cc-switch 的 provider / MCP / skills / prompt 一次複製過來，不動 cc-switch。",
+      "button": "從 cc-switch 匯入",
+      "noSource": "未偵測到 cc-switch 資料（~/.cc-switch/cc-switch.db）",
+      "loading": "正在讀取 cc-switch 資料…",
+      "confirm": "一鍵匯入",
+      "importing": "匯入中…",
+      "importFailed": "從 cc-switch 匯入失敗: {{message}}",
+      "statProviders": "Providers",
+      "statMcp": "MCP",
+      "statPrompts": "Prompts",
+      "statSkills": "Skills",
+      "skippedTitle": "以下 {{count}} 筆已由 LoongPort 接管，不會重複匯入：",
+      "skippedAfterTitle": "這 {{count}} 筆已由 LoongPort 接管，請在中轉站區查看：",
+      "mergedToRelayTitle": "以下 {{count}} 筆的站點已由中轉站組維護，統一在中轉站區管理，不重複匯入：",
+      "mergedToRelayAfterTitle": "這 {{count}} 筆的站點已由中轉站組維護，請在中轉站區查看：",
+      "importSuccess": "匯入完成",
+      "reportSummary": "匯入 {{providers}} 個 provider、{{mcp}} 個 MCP、{{prompts}} 個 prompt、{{skills}} 個 skill。",
+      "backupId": "匯入前已自動備份：{{backupId}}"
+    },
     "exportConfig": "匯出 SQL 備份",
     "selectConfigFile": "選擇 SQL 檔案",
     "noFileSelected": "尚未選擇設定檔。",
@@ -885,7 +908,8 @@
     "grokbuild": "Grok Build",
     "opencode": "OpenCode",
     "openclaw": "OpenClaw",
-    "hermes": "Hermes"
+    "hermes": "Hermes",
+    "more": "更多"
   },
   "grokBuild": {
     "apiBackend": "API Backend",
@@ -3028,8 +3052,12 @@
     "refresh": "重新整理"
   },
   "loongport": {
+    "sections": {
+      "relay": "中轉站",
+      "official": "官方 API",
+      "other": "其他"
+    },
     "tierList": {
-      "title": "營運商與方案",
       "empty": "還沒有新增任何中轉站",
       "addSite": "新增中轉站",
       "refresh": "重新整理檔位與金鑰"
@@ -3052,7 +3080,7 @@
       "remove": "刪除這個帳號（連帶它的方案）",
       "removeBlockedByCurrent": "它有方案正在使用，先切到其他方案再刪",
       "removeConfirmTitle": "刪除這個帳號？",
-      "removeConfirmMessage": "會刪掉「{{label}}」的登入狀態，連帶它已產生的 {{count}} 個方案。已充值的餘額留在營運商那邊，重新登入就能再用。",
+      "removeConfirmMessage": "會刪掉「{{label}}」的登入狀態，連帶它已產生的 {{count}} 個方案。已充值的餘額留在中轉站那邊，重新登入就能再用。",
       "removeConfirmMessageNeverLoggedIn": "會刪掉「{{label}}」這一行，連帶它已產生的 {{count}} 個方案。這個帳號從沒登入過，隨時可以重新新增。"
     },
     "health": {
@@ -3121,9 +3149,9 @@
       "readyWithKeys": "已備好 {{count}} 個方案，新建 {{keys}} 把金鑰",
       "landedOnOtherPlatforms": "這個帳號有 {{count}} 個分組，但都不屬於目前這個 CLI。切到上方對應的標籤頁查看。",
       "groupFailed": "{{group}}：{{reason}}",
-      "refreshed": "已重新整理 {{operators}} 個營運商，共 {{tiers}} 個方案",
+      "refreshed": "已重新整理 {{relays}} 個中轉站，共 {{tiers}} 個方案",
       "refreshFailedWithReason": "{{name}} 重新整理失敗：{{reason}}",
-      "refreshedWithKeys": "已重新整理 {{operators}} 個營運商，共 {{tiers}} 個檔位，新建 {{keys}} 把金鑰"
+      "refreshedWithKeys": "已重新整理 {{relays}} 個中轉站，共 {{tiers}} 個檔位，新建 {{keys}} 把金鑰"
     },
     "switch": {
       "done": "已切換到 {{name}}",
@@ -3161,7 +3189,8 @@
       "sponsorAddAnother": "已有 {{count}} 個帳號 · 再加一個"
     },
     "vendor": {
-      "add": "新增官網帳號（DeepSeek）",
+      "add": "新增官網帳號",
+      "empty": "還沒有新增任何官網帳號",
       "remove": "刪除這個官網帳號（連帶它的設定）",
       "removeConfirmTitle": "刪除這個官網帳號？",
       "removeConfirmMessage": "會刪掉「{{label}}」的登入狀態與本機金鑰，連帶它在六個平台產生的設定。官網上那把 API 金鑰不會被刪，重新登入就能再用。",
@@ -3181,7 +3210,7 @@
       "companionDetail": "生圖靠 LoongPort 自帶的工具（MCP）完成：你在 codex / claude 裡說「生成一張圖」，它就用這裡選定的檔位出圖。而對話仍走 Codex 標籤頁裡選的那個檔位 —— 兩者各自獨立，聊天可以用 DeepSeek 或任何別的站。",
       "howTo": "換生圖檔位不用重啟 CLI，下一次生成就用新的。只有第一次有生圖檔位時要新開一個終端，讓 codex 讀到那個工具。",
       "emptyTitle": "還沒有生圖檔位",
-      "emptyBody": "生圖檔位由「取得密鑰」自動識別：運營商那邊有只掛 gpt-image 模型的分組時，它就出現在這裡。你的站點可能沒有提供生圖分組 —— 那樣這一頁保持空著就好，CLI 的設定裡不會多出任何東西。"
+      "emptyBody": "生圖檔位由「取得密鑰」自動識別：中轉站那邊有只掛 gpt-image 模型的分組時，它就出現在這裡。你的站點可能沒有提供生圖分組 —— 那樣這一頁保持空著就好，CLI 的設定裡不會多出任何東西。"
     }
   }
 }

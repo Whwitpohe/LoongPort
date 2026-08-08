@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
  *
  * ## 为什么是读源码断言，而不是渲染查 DOM
  *
- * 照 `OperatorRowHoverActions.test.ts` 与上游 `ProviderCardLayout.test.ts` 的形状。
+ * 照 `RelayRowHoverActions.test.ts` 与上游 `ProviderCardLayout.test.ts` 的形状。
  * 这里要验的几条性质在 jsdom 里都测不出来：
  *
  * - **三态判据**（`=== true` 而不是 `??`）—— 渲染测试只能验 `true` 与 `false` 两种
@@ -19,22 +19,17 @@ import { describe, expect, it } from "vitest";
  *
  * ## 它守的是什么
  *
- * 这套 UI 是从 `OperatorRow` 抄过来的（CLAUDE.md §一：两类行放一起看不出是两个人
+ * 这套 UI 是从 `RelayRow` 抄过来的（CLAUDE.md §一：两类行放一起看不出是两个人
  * 写的）。抄的时候最容易丢的正是上面那三条不显眼的约定，而丢了之后
  * 类型检查、prettier、vitest 全绿。
  */
 const read = (...segs: string[]) =>
   fs.readFileSync(path.resolve(__dirname, "..", "..", ...segs), "utf8");
 
-const VENDOR_ROW = read("src", "components", "operator", "VendorRow.tsx");
-const OPERATOR_ROW = read("src", "components", "operator", "OperatorRow.tsx");
-const EDIT_GUARD = read(
-  "src",
-  "components",
-  "operator",
-  "useTierEditGuard.tsx",
-);
-const SECTION = read("src", "components", "operator", "OperatorSection.tsx");
+const VENDOR_ROW = read("src", "components", "relay", "VendorRow.tsx");
+const RELAY_ROW = read("src", "components", "relay", "RelayRow.tsx");
+const EDIT_GUARD = read("src", "components", "relay", "useTierEditGuard.tsx");
+const SECTION = read("src", "components", "relay", "RelaySection.tsx");
 const VENDOR_API = read("src", "lib", "api", "vendor.ts");
 
 describe("官网行的 userEdited 是三态", () => {
@@ -45,8 +40,8 @@ describe("官网行的 userEdited 是三态", () => {
     expect(VENDOR_ROW).not.toMatch(/!account\.userEdited/);
   });
 
-  it("与 `OperatorRow` 用同一个判据 —— 两类行的三态语义必须一致", () => {
-    expect(OPERATOR_ROW).toContain("userEdited === true");
+  it("与 `RelayRow` 用同一个判据 —— 两类行的三态语义必须一致", () => {
+    expect(RELAY_ROW).toContain("userEdited === true");
   });
 });
 
@@ -103,7 +98,9 @@ describe("编辑流程复用 useTierEditGuard", () => {
   it("保存失败仍然 throw —— 不能只 toast", () => {
     // `EditProviderDialog` 是 `await onSubmit(); onOpenChange(false)`：
     // 吃掉错误会让它照常关窗，用户刚敲的一屏配置全丢。
-    expect(EDIT_GUARD).toMatch(/toast\.error\(String\(e\)\);\s*\n\s*\/\/[^\n]*\n\s*throw e;/);
+    expect(EDIT_GUARD).toMatch(
+      /toast\.error\(String\(e\)\);\s*\n\s*\/\/[^\n]*\n\s*throw e;/,
+    );
   });
 });
 

@@ -428,6 +428,29 @@
     "themeSystem": "跟随系统",
     "importExport": "SQL 导入导出",
     "importExportHint": "导入/导出数据库 SQL 备份（仅支持导入由 LoongPort 导出的备份），便于备份或迁移。",
+    "ccSwitchImport": {
+      "title": "从 cc-switch 导入",
+      "description": "一键把 cc-switch 的配置复制到 LoongPort，不动 cc-switch 那边。",
+      "sectionTitle": "从 cc-switch 导入",
+      "sectionHint": "把 cc-switch 的 provider / MCP / skills / prompt 一次性复制过来，不动 cc-switch。",
+      "button": "从 cc-switch 导入",
+      "noSource": "未检测到 cc-switch 数据（~/.cc-switch/cc-switch.db）",
+      "loading": "正在读取 cc-switch 数据…",
+      "confirm": "一键导入",
+      "importing": "导入中…",
+      "importFailed": "从 cc-switch 导入失败: {{message}}",
+      "statProviders": "Providers",
+      "statMcp": "MCP",
+      "statPrompts": "Prompts",
+      "statSkills": "Skills",
+      "skippedTitle": "以下 {{count}} 条已由 LoongPort 接管，不会重复导入：",
+      "skippedAfterTitle": "这 {{count}} 条已由 LoongPort 接管，请在中转站区查看：",
+      "mergedToRelayTitle": "以下 {{count}} 条的站点已由中转站组维护，统一在中转站区管理，不重复导入：",
+      "mergedToRelayAfterTitle": "这 {{count}} 条的站点已由中转站组维护，请在中转站区查看：",
+      "importSuccess": "导入完成",
+      "reportSummary": "导入 {{providers}} 个 provider、{{mcp}} 个 MCP、{{prompts}} 个 prompt、{{skills}} 个 skill。",
+      "backupId": "导入前已自动备份：{{backupId}}"
+    },
     "exportConfig": "导出 SQL 备份",
     "selectConfigFile": "选择 SQL 文件",
     "noFileSelected": "尚未选择配置文件。",
@@ -884,7 +907,8 @@
     "grokbuild": "Grok Build",
     "opencode": "OpenCode",
     "openclaw": "OpenClaw",
-    "hermes": "Hermes"
+    "hermes": "Hermes",
+    "more": "更多"
   },
   "grokBuild": {
     "apiBackend": "API Backend",
@@ -3027,8 +3051,12 @@
     "refresh": "刷新"
   },
   "loongport": {
+    "sections": {
+      "relay": "中转站",
+      "official": "官方 API",
+      "other": "其他"
+    },
     "tierList": {
-      "title": "运营商与档位",
       "empty": "还没有添加任何中转站",
       "addSite": "添加中转站",
       "refresh": "刷新档位与密钥"
@@ -3051,7 +3079,7 @@
       "remove": "删除这个账号（连带它的档位）",
       "removeBlockedByCurrent": "它有档位正在使用，先切到别的档位再删",
       "removeConfirmTitle": "删除这个账号？",
-      "removeConfirmMessage": "会删掉「{{label}}」的登录态，连带它已生成的 {{count}} 个档位。已充值的余额留在运营商那边，重新登录就能再用。",
+      "removeConfirmMessage": "会删掉「{{label}}」的登录态，连带它已生成的 {{count}} 个档位。已充值的余额留在中转站那边，重新登录就能再用。",
       "removeConfirmMessageNeverLoggedIn": "会删掉「{{label}}」这一行，连带它已生成的 {{count}} 个档位。这个账号从没登录过，随时可以重新添加。"
     },
     "health": {
@@ -3120,9 +3148,9 @@
       "readyWithKeys": "已备好 {{count}} 个档位，新建 {{keys}} 把密钥",
       "landedOnOtherPlatforms": "这个账号有 {{count}} 个分组，但都不属于当前这个 CLI。切到上方对应的标签页查看。",
       "groupFailed": "{{group}}：{{reason}}",
-      "refreshed": "已刷新 {{operators}} 个运营商，共 {{tiers}} 个档位",
+      "refreshed": "已刷新 {{relays}} 个中转站，共 {{tiers}} 个档位",
       "refreshFailedWithReason": "{{name}} 刷新失败：{{reason}}",
-      "refreshedWithKeys": "已刷新 {{operators}} 个运营商，共 {{tiers}} 个档位，新建 {{keys}} 把密钥"
+      "refreshedWithKeys": "已刷新 {{relays}} 个中转站，共 {{tiers}} 个档位，新建 {{keys}} 把密钥"
     },
     "switch": {
       "done": "已切换到 {{name}}",
@@ -3160,7 +3188,8 @@
       "sponsorAddAnother": "已有 {{count}} 个账号 · 再加一个"
     },
     "vendor": {
-      "add": "添加官网账号（DeepSeek）",
+      "add": "添加官网账号",
+      "empty": "还没有添加任何官网账号",
       "remove": "删除这个官网账号（连带它的配置）",
       "removeConfirmTitle": "删除这个官网账号？",
       "removeConfirmMessage": "会删掉「{{label}}」的登录态与本地密钥，连带它在六个平台生成的配置。官网上那把 API key 不会被删，重新登录就能再用。",
@@ -3180,7 +3209,7 @@
       "companionDetail": "生图靠 LoongPort 自带的工具（MCP）完成：你在 codex / claude 里说「生成一张图」，它就用这里选定的档位出图。而对话仍走 Codex 标签页里选的那个档位 —— 两者各自独立，聊天可以用 DeepSeek 或任何别的站。",
       "howTo": "换生图档位不用重启 CLI，下一次生成就用新的。只有第一次有生图档位时要新开一个终端，让 codex 读到那个工具。",
       "emptyTitle": "还没有生图档位",
-      "emptyBody": "生图档位由「获取密钥」自动识别：运营商那边有只挂 gpt-image 模型的分组时，它就出现在这里。你的站点可能没有提供生图分组 —— 那样这一页保持空着就好，CLI 的配置里不会多出任何东西。"
+      "emptyBody": "生图档位由「获取密钥」自动识别：中转站那边有只挂 gpt-image 模型的分组时，它就出现在这里。你的站点可能没有提供生图分组 —— 那样这一页保持空着就好，CLI 的配置里不会多出任何东西。"
     }
   }
 }
