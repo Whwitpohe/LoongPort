@@ -37,8 +37,10 @@ use crate::app_config::AppType;
 use crate::error::AppError;
 use crate::events::{emit_provider_switched, PURCHASE_CLOSED};
 use crate::provider::Provider;
-use crate::relay::{api, chatgpt_app, creds, login, provision, purchase};
-use crate::services::{McpService, ProviderService};
+use crate::relay::{
+    api, chatgpt_app, creds, imagegen_mcp, login, provider_fingerprint, provision, purchase,
+};
+use crate::services::ProviderService;
 use crate::store::AppState;
 
 /// 默认中转站域名。域名输入框的底纹词，用户直接点确定就用它。
@@ -156,6 +158,11 @@ pub struct TierInfo {
     /// 远端 API Key 自己的名字，用于区分绑定同一分组的多条配置。
     pub key_name: Option<String>,
     pub display_name: String,
+    /// The model currently written into this provider's Codex config.
+    pub model: String,
+    /// Model ids discovered from this tier's `/v1/models` endpoint.
+    /// An empty list means no complete remote catalog is available.
+    pub models: Vec<String>,
     pub rate_multiplier: Option<f64>,
     pub is_current: bool,
     /// 用户在 cc-switch 编辑页改过这个档位的配置吗。
@@ -268,6 +275,15 @@ pub struct ProvisionSummary {
     /// 本次刷新从 `/api/v1/groups/available` 得到的全部可绑定分组。
     /// `tiers` 是配置槽位，`available_groups` 是下拉框选项；两者数量可以不同。
     pub available_groups: Vec<AvailableGroupInfo>,
+    /// Imported non-managed providers removed because LoongPort now owns the same credential.
+    pub merged_providers: Vec<MergedProviderInfo>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergedProviderInfo {
+    pub name: String,
+    pub app_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1147,6 +1163,12 @@ async fn rebind_tier_impl(
     }
 
     let user_edited = Some(state.db.get_user_edited(app_type.as_str(), &rebound.id)?);
+    let model = provision::extract_model(&rebound.settings_config).unwrap_or_default();
+    let models = if matches!(app_type, AppType::Codex) {
+        codex_models_from_settings(&rebound.settings_config)
+    } else {
+        Vec::new()
+    };
     Ok(TierInfo {
         provider_id: rebound.id,
         group_id: Some(tier.group_id),
@@ -1154,6 +1176,8 @@ async fn rebind_tier_impl(
         group_name: tier.group_name,
         key_name: Some(updated_key.name),
         display_name,
+        model,
+        models,
         rate_multiplier: Some(tier.rate_multiplier),
         is_current,
         user_edited,
@@ -1203,6 +1227,7 @@ async fn do_provision(
     let state = app_handle.state::<AppState>();
 
     let mut tiers = Vec::new();
+    let mut merged_providers = Vec::new();
     // 这次 provision 认可的「(app_type, provider_id)」组合。见下方 insert 处的说明。
     let mut keep: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     // 这次改写到的档位里，哪些**正是所属 app 的当前项**。见循环后那段刷 live 的说明。
@@ -1297,6 +1322,15 @@ async fn do_provision(
                     &tier.model,
                     tier.roles.clone(),
                 )
+            } else if matches!(app_type, AppType::Codex) {
+                provision::settings_config_with_models(
+                    app_type,
+                    &api_key,
+                    &display_name,
+                    &base_url,
+                    &tier.model,
+                    tier.models.as_deref(),
+                )
             } else {
                 provision::settings_config_for(
                     app_type,
@@ -1329,6 +1363,9 @@ async fn do_provision(
                         log::warn!("{display_name} 的配置里找不到放密钥的位置，已重置为默认配置");
                         defaults
                     }
+                }
+                Some(old) if matches!(app_type, AppType::Codex) => {
+                    preserve_supported_codex_model(defaults, &old.settings_config)
                 }
                 _ => defaults,
             };
@@ -1375,10 +1412,39 @@ async fn do_provision(
                 .save_provider(app_type.as_str(), &provider)
                 .map_err(|e| AppError::Database(format!("保存档位 {display_name} 失败: {e}")))?;
 
+            // LoongPort 托管档位是同凭据的 owner，收编导入后遗留的非托管副本。
+            let merged_current = provider_fingerprint::remove_unmanaged_duplicates(
+                state.db.as_ref(),
+                app_type,
+                &provider,
+            )?;
+            let merged_was_current = merged_current.iter().any(|merged| merged.was_current);
+            if !merged_current.is_empty() {
+                log::info!(
+                    "收编 {} 个重复的 {} provider：{}",
+                    merged_current.len(),
+                    app_type.as_str(),
+                    merged_current
+                        .iter()
+                        .map(|merged| merged.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("、")
+                );
+                merged_providers.extend(merged_current.iter().map(|merged| MergedProviderInfo {
+                    name: merged.name.clone(),
+                    app_id: app_type.as_str().to_string(),
+                }));
+                if merged_was_current {
+                    state
+                        .db
+                        .set_current_provider(app_type.as_str(), &provider_id)?;
+                }
+            }
+
             // provider_id 不含 app_type，同一分组可同时出现在多个平台，因此保留键必须带平台。
             keep.insert((app_type.as_str().to_string(), provider_id.clone()));
 
-            let is_current = current == provider_id;
+            let is_current = current == provider_id || merged_was_current;
             if is_current {
                 refresh_live.push(app_type.clone());
             }
@@ -1391,6 +1457,12 @@ async fn do_provision(
                 group_name: tier.group_name.clone(),
                 key_name: Some(api_key_name),
                 display_name: display_name.clone(),
+                model: provision::extract_model(&provider.settings_config).unwrap_or_default(),
+                models: if matches!(app_type, AppType::Codex) {
+                    codex_models_from_settings(&provider.settings_config)
+                } else {
+                    Vec::new()
+                },
                 rate_multiplier: Some(tier.rate_multiplier),
                 user_edited: Some(user_edited),
                 allow_image_generation: Some(tier.allow_image_generation),
@@ -1430,7 +1502,7 @@ async fn do_provision(
     //
     // 失败只 warn：档位已经存对了，不该因为一个 MCP 记录写不下去就把「获取密钥」
     // 整个报成失败（用户会以为连密钥都没拿到）。
-    if let Err(e) = sync_imagegen_mcp(&state) {
+    if let Err(e) = imagegen_mcp::sync_registration(&state) {
         log::warn!("同步生图工具记录失败（生图可能暂时用不了）: {e}");
     }
 
@@ -1447,6 +1519,7 @@ async fn do_provision(
             .into_iter()
             .map(|(group_name, reason)| FailureInfo { group_name, reason })
             .collect(),
+        merged_providers,
     })
 }
 
@@ -1816,6 +1889,15 @@ async fn reset_tier_config_impl(
     provider_id: &str,
     app_type: AppType,
 ) -> Result<(), AppError> {
+    let state = app_handle.state::<AppState>();
+    reset_tier_config_in_state(state.inner(), provider_id, app_type)
+}
+
+fn reset_tier_config_in_state(
+    state: &AppState,
+    provider_id: &str,
+    app_type: AppType,
+) -> Result<(), AppError> {
     // 只对托管档位有效 —— 用户自建的 provider 没有「默认配置」这个概念。
     // 用正向判据 `is_managed`，不要拿 `reject_if_managed` 的 Err 反着判 ——
     // 那个函数的语义是「撞到托管项就拦下」（给通用命令用），这里要的恰好相反
@@ -1826,7 +1908,9 @@ async fn reset_tier_config_impl(
         ));
     }
 
-    let state = app_handle.state::<AppState>();
+    let verification_scope =
+        crate::relay::model_verification::types::TargetScope::new(provider_id, app_type.as_str());
+    state.model_verification.cancel_scope(&verification_scope);
     let existing = state
         .db
         .get_provider_by_id(provider_id, app_type.as_str())
@@ -1866,7 +1950,7 @@ async fn reset_tier_config_impl(
     // `None` = 旧数据：那时只能按站点回落，且**只在该站只有一行时**才敢用 ——
     // 有多行还猜就是重演这个 bug。
     let account_id = existing.meta.as_ref().and_then(|m| m.loongport_account_id);
-    let candidates: Vec<_> = with_conn(state.inner(), creds::list)?
+    let candidates: Vec<_> = with_conn(state, creds::list)?
         .into_iter()
         .filter(|candidate| candidate.site_origin == site_origin)
         .collect();
@@ -1905,6 +1989,15 @@ async fn reset_tier_config_impl(
             AppError::Config("这个档位的配置里读不出密钥了，请用「获取密钥」重新生成它。".into())
         })?;
 
+    // Codex 的远端模型目录已经存进 `modelCatalog`：恢复默认时按同一份目录重新挑
+    // 默认模型，并保留目录本身。否则这个动作会把刚外露的模型列表清空，还可能把
+    // 不支持 `DEFAULT_MODEL` 的分组重置成一条选中即 404 的配置。
+    let codex_models = if matches!(app_type, AppType::Codex) {
+        codex_models_from_settings(&existing.settings_config)
+    } else {
+        Vec::new()
+    };
+
     // ⚠️ **生图档位要保住它自己的模型名**（review 抓出）。
     //
     // 这条路拿不到分组数据（手上只有本地 `settings_config`），所以原来无条件写
@@ -1916,17 +2009,27 @@ async fn reset_tier_config_impl(
     //
     // 这**不是**「保留用户改的模型名」—— 用户把模型改成任何文本模型时仍然会被重置成
     // 默认值，那正是这个按钮该做的事。
-    let model = provision::extract_model(&existing.settings_config)
-        .filter(|m| provision::is_image_model(m))
-        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let model = if codex_models.is_empty() {
+        provision::extract_model(&existing.settings_config)
+            .filter(|m| provision::is_image_model(m))
+            .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+    } else {
+        provision::pick_tier_models(&app_type, Some(&codex_models)).main
+    };
+    let base_url = api::base_url_for(&app_type, &op.site_origin, &op.api_base_url);
 
-    let settings_config = provision::settings_config_for(
-        &app_type,
-        &api_key,
-        &existing.name,
-        &api::base_url_for(&app_type, &op.site_origin, &op.api_base_url),
-        &model,
-    )
+    let settings_config = if matches!(app_type, AppType::Codex) {
+        provision::settings_config_with_models(
+            &app_type,
+            &api_key,
+            &existing.name,
+            &base_url,
+            &model,
+            Some(&codex_models),
+        )
+    } else {
+        provision::settings_config_for(&app_type, &api_key, &existing.name, &base_url, &model)
+    }
     .ok_or_else(|| {
         AppError::Config(format!(
             "还不能为 {} 生成默认配置（`settings_config_for` 里没有它的形状）。",
@@ -1962,6 +2065,11 @@ async fn reset_tier_config_impl(
         .set_user_edited(app_type.as_str(), &restored.id, false)
         .map_err(|e| AppError::Database(format!("清除已手工维护标记失败: {e}")))?;
 
+    state
+        .model_verification
+        .clear_scope(&verification_scope)
+        .map_err(|_| AppError::Database("清除模型验证结果失败".into()))?;
+
     // 重置的正是当前项 ⇒ 把默认配置落到 live 文件上。
     //
     // ⚠️ **这一步不可省，否则这个命令对当前项整体无效**：这个按钮的全部意义就是
@@ -1973,11 +2081,11 @@ async fn reset_tier_config_impl(
     // 与 `do_provision` 同一条路（见那边关于为什么用 `sync_current_provider_for_app`
     // 而不是 `switch` 的说明）。失败只 warn：DB 已经是对的，切一次即生效，
     // 不该因为落地文件写不下去就报「恢复失败」。
-    let is_current = ProviderService::current(&state, app_type.clone())
+    let is_current = ProviderService::current(state, app_type.clone())
         .map(|current| current == restored.id)
         .unwrap_or(false);
     if is_current {
-        refresh_live_for_current_tiers(&state, std::slice::from_ref(&app_type));
+        refresh_live_for_current_tiers(state, std::slice::from_ref(&app_type));
     }
 
     Ok(())
@@ -2181,12 +2289,66 @@ fn tiers_of_site(
 
 /// 内部版本额外带出每条档位的 `website_url`（= 所属站点的 origin），供
 /// [`list_relays_impl`] 按站分组。命令层把它丢掉 —— 那是实现细节，不进对外契约。
+fn codex_models_from_settings(settings: &serde_json::Value) -> Vec<String> {
+    settings
+        .get("modelCatalog")
+        .and_then(|catalog| catalog.get("models"))
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("model").and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// A LoongPort model-chip click is a managed preference, so refreshing the
+/// tier should keep it while the newly fetched catalog still advertises it.
+/// Once the upstream removes the model, the freshly computed default wins.
+fn preserve_supported_codex_model(
+    defaults: serde_json::Value,
+    previous: &serde_json::Value,
+) -> serde_json::Value {
+    let Some(model) = provision::extract_model(previous) else {
+        return defaults;
+    };
+    select_codex_model(&defaults, &model).unwrap_or(defaults)
+}
+
+fn select_codex_model(
+    settings: &serde_json::Value,
+    model: &str,
+) -> Result<serde_json::Value, AppError> {
+    let model = model.trim();
+    if model.is_empty()
+        || !codex_models_from_settings(settings)
+            .iter()
+            .any(|candidate| candidate == model)
+    {
+        return Err(AppError::Config(format!(
+            "模型 {model:?} 不在这个档位支持的模型列表中"
+        )));
+    }
+
+    let config = settings
+        .get("config")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| AppError::Config("这个 Codex 档位缺少 config.toml".to_string()))?;
+    let updated_config = crate::codex_config::update_codex_toml_field(config, "model", model)
+        .map_err(AppError::Config)?;
+    let mut updated = settings.clone();
+    updated["config"] = serde_json::Value::String(updated_config);
+    Ok(updated)
+}
+
 fn list_tiers_impl(state: &AppState, app_type: AppType) -> Result<Vec<OwnedTier>, AppError> {
     // AppType 没派生 Copy（上游结构，别为此改它），所以 clone 一份给第二个调用点。
     let current = ProviderService::current(state, app_type.clone()).unwrap_or_default();
     // 这条路按 app 查，所以结果天然同质 —— 每条档位的 `app_id` 就是被查的那个。
     // 先取出来：`app_type` 下一行就被 move 进 `list` 了。
     let app_id = app_type.as_str().to_string();
+    let exposes_codex_models = matches!(app_type, AppType::Codex);
     let providers = ProviderService::list(state, app_type)?;
 
     let mut tiers: Vec<OwnedTier> = providers
@@ -2211,6 +2373,12 @@ fn list_tiers_impl(state: &AppState, app_type: AppType) -> Result<Vec<OwnedTier>
                     .as_ref()
                     .and_then(|m| m.loongport_api_key_name.clone()),
                 display_name: p.name.clone(),
+                model: provision::extract_model(&p.settings_config).unwrap_or_default(),
+                models: if exposes_codex_models {
+                    codex_models_from_settings(&p.settings_config)
+                } else {
+                    Vec::new()
+                },
                 is_current: current == p.id,
                 // 判据要 `api_base_url`（按站点存），这里拿不到 ⇒ 留 None，
                 // 由 `tiers_of_site` 在按站分组时填。见该字段的文档。
@@ -2263,6 +2431,77 @@ pub async fn relay_switch_tier(
     switch_tier_impl(&app_handle, &provider_id, app_type, quit_chatgpt)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Select a supported model from a managed Codex tier and activate that tier.
+///
+/// The model catalog stored with the provider is the authority for validation;
+/// this keeps a stale frontend from writing an arbitrary model into
+/// `config.toml`. Updating the provider before the normal switch flow also
+/// means ChatGPT is restarted with the selected model already in place.
+#[tauri::command]
+pub async fn relay_switch_tier_model(
+    app_handle: tauri::AppHandle,
+    provider_id: String,
+    app: String,
+    model: String,
+    quit_chatgpt: bool,
+) -> Result<SwitchTierResult, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    select_tier_model_impl(&app_handle, &provider_id, app_type, &model, quit_chatgpt)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn select_tier_model_impl(
+    app_handle: &tauri::AppHandle,
+    provider_id: &str,
+    app_type: AppType,
+    model: &str,
+    quit_chatgpt: bool,
+) -> Result<SwitchTierResult, AppError> {
+    if !matches!(app_type, AppType::Codex) {
+        return Err(AppError::Config(
+            "模型选择目前只支持 Codex 档位".to_string(),
+        ));
+    }
+    if !crate::relay::is_managed(provider_id) {
+        return Err(AppError::Config(
+            "只有 LoongPort 托管的 Codex 档位才能从模型列表切换".to_string(),
+        ));
+    }
+
+    let state = app_handle.state::<AppState>();
+    let original_settings = state
+        .db
+        .get_provider_by_id(provider_id, app_type.as_str())?
+        .ok_or_else(|| AppError::Config("这个 Codex 档位不存在".to_string()))?
+        .settings_config;
+    let settings = select_codex_model(&original_settings, model)?;
+
+    state
+        .db
+        .update_provider_settings_config(app_type.as_str(), provider_id, &settings)?;
+
+    match switch_tier_impl(app_handle, provider_id, app_type.clone(), quit_chatgpt).await {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            // Model selection is a managed preference, not a manual provider
+            // edit. If the guarded switch fails, restore the DB value so a
+            // later refresh cannot silently apply a model the user never
+            // successfully switched to.
+            if let Err(rollback_error) = state.db.update_provider_settings_config(
+                app_type.as_str(),
+                provider_id,
+                &original_settings,
+            ) {
+                return Err(AppError::Config(format!(
+                    "{error}；模型配置回滚失败：{rollback_error}"
+                )));
+            }
+            Err(error)
+        }
+    }
 }
 
 /// 这次切换要不要退 ChatGPT。
@@ -2472,7 +2711,7 @@ fn remove_site_impl(state: &AppState, id: i64) -> Result<(), AppError> {
     //
     // 失败只 warn：站点记录马上就删了，不该因为一个 MCP 记录撤不掉而让「删站点」失败
     // （与上面那段清理档位同一条原则）。
-    if let Err(e) = sync_imagegen_mcp(state) {
+    if let Err(e) = imagegen_mcp::sync_registration(state) {
         log::warn!("删除站点 {site_origin} 后同步生图工具记录失败: {e}");
     }
 
@@ -2903,128 +3142,44 @@ fn with_conn<T>(
 // 生图工具（MCP）
 // ============================================================================
 
-/// 生图 MCP 在 `mcp_servers` 表里的 id。
-///
-/// ## 为什么是**一条固定记录**而不是「一个档位一条」
-///
-/// 「用哪个档位生图」= 生图栏（`codex-image`）的当前项，MCP 进程**每次生图时现读**
-/// （见 `imagegen_mcp::current_image_tier_id`）。所以这条 MCP 记录的内容与档位无关，
-/// 只回答「这个宿主要不要有生图工具」—— 换档位不必改它。
-///
-/// 那正是「切生图档位不用重启 codex」的来源：codex 只在启动时读它的 `config.toml`，
-/// 若档位 id 写在这条记录里，用户每换一次都得新开终端。
-///
-/// ⚠️ 这个 id 会成为 `[mcp_servers.<id>]` 的表名，**跨出了进程边界** ——
-/// 改它等于让已装用户的旧配置成为孤儿（库里删不到、CLI 里还留着一条起不来的 server）。
-const IMAGEGEN_MCP_ID: &str = "loongport-imagegen";
-
-/// 启动 MCP server 模式的命令行开关。**与 `main.rs` 里那个判断必须一致**。
-///
-/// 两处各写一遍字面量迟早分叉（改了一处另一处没跟上 ⇒ 写出去的配置启动不了 server，
-/// 而症状是宿主那边"启动超时"，看不出是拼写问题）。所以这里是唯一定义，
-/// `main.rs` 用 `cc_switch_lib::IMAGEGEN_MCP_FLAG` 引它。
-pub const IMAGEGEN_MCP_FLAG: &str = "--mcp-image-gen";
-
-/// 生图工具的安装 / 撤销，跟着「生图栏里有没有档位」自动走。
-///
-/// ## 为什么不再有「启用生图」这个显式动作
-///
-/// 上一版有一对命令（`relay_set_image_tier` / `relay_current_image_tier`）在
-/// `settings` 表里维护「用哪个档位生图」。分栏之后那套是纯粹的重复：
-/// 「当前是哪一档」由 `providers.is_current` 表达，而它**每个 app_type 一栏** ——
-/// 生图栏天然就有自己的一份，用户点「切换」走的就是与聊天档位同一条路
-/// （`relay_switch_tier`）。
-///
-/// 所以现在只剩一个问题：**这个宿主要不要有生图工具**。答案由生图栏里有没有档位决定，
-/// 在 provision 收尾时对齐一次（见 [`sync_imagegen_mcp`]）。用户不必学第二套操作。
-/// 确保生图 MCP 记录在库里（进而被同步进各 CLI 的配置）。
-///
-/// ## 为什么写 `mcp_servers` 表而不是直接改 CLI 的配置文件
-///
-/// 那张表是 MCP 的 SSOT，各 CLI 的 `config.toml` / `mcp.json` 只是它的投影
-/// （`codex_config.rs` 的 `strip_codex_mcp_servers_from_settings` 那段注释钉过这条）。
-/// 自己去写配置文件会被下一次同步覆盖，而且绕过了「切档位时重投影」那套逻辑。
-///
-/// **幂等**：装的那一支走 `upsert_server`（覆盖同 id），撤的那一支走 `delete_server`
-/// （不存在时返回 `Ok(false)`）。所以每次 provision 收尾都能无条件调它。
-///
-/// ## 「有没有生图档位」是唯一判据
-///
-/// 用户那个站可能压根没有生图分组（实测 bestapi.store 就没有）—— 那时生图栏是空的，
-/// 这里把 MCP 记录撤掉 ⇒ **CLI 的配置里一个字都不多**，完全无感。
-/// 有生图分组的用户则自动获得那个工具，不必学一个额外的「启用生图」动作。
-///
-/// ⚠️ **不看「有没有选当前项」** —— 那会让「装工具」依赖一个用户可能还没做的选择，
-/// 而工具在没选档位时本来就会给出一句可操作的提示（`NO_IMAGE_TIER_HINT`）。
-/// 反过来（有档位却没工具）才是真的坏：用户说「画一只猫」，模型答「我没有这个工具」。
-fn sync_imagegen_mcp(state: &AppState) -> Result<(), AppError> {
-    let has_image_tiers = ProviderService::list(state, AppType::CodexImage)
-        .map(|list| list.values().any(is_managed))
-        .unwrap_or(false);
-
-    if !has_image_tiers {
-        // 撤掉。**不因为它本来就不在而算失败** —— `delete_server` 返回 `Ok(false)`。
-        let removed = McpService::delete_server(state, IMAGEGEN_MCP_ID)?;
-        if removed {
-            log::info!("生图栏里没有档位了，撤掉生图 MCP 记录");
-        }
-        return Ok(());
-    }
-
-    install_imagegen_mcp(state)
-}
-
-/// 把生图 MCP 记录写进库（幂等）。
-fn install_imagegen_mcp(state: &AppState) -> Result<(), AppError> {
-    // 当前可执行文件的绝对路径。macOS 上这是 `.app/Contents/MacOS/<bin>`，
-    // 正是 CLI 该去启动的东西。
-    let exe = std::env::current_exe()
-        .map_err(|e| AppError::Message(format!("获取可执行文件路径失败: {e}")))?;
-    let exe_str = exe
-        .to_str()
-        .ok_or_else(|| AppError::Message("可执行文件路径不是有效的 UTF-8".into()))?;
-
-    // ⚠️ **args 里不带档位 id** —— 见 `IMAGEGEN_MCP_ID` 的文档：带了就等于每次换档位都
-    // 改 CLI 配置文件，而 codex 只在启动时读它。
-    let spec = serde_json::json!({
-        "type": "stdio",
-        "command": exe_str,
-        "args": [IMAGEGEN_MCP_FLAG],
-    });
-
-    // 装到 codex + claude + gemini：这三个都支持 stdio MCP，而「要生图」与用户在哪个
-    // CLI 里干活无关。不装 opencode / hermes —— 那两个的配置形状要另外验，没验过的不写。
-    let apps = crate::app_config::McpApps {
-        codex: true,
-        claude: true,
-        gemini: true,
-        ..Default::default()
-    };
-
-    McpService::upsert_server(
-        state,
-        crate::app_config::McpServer {
-            id: IMAGEGEN_MCP_ID.to_string(),
-            name: "LoongPort 生图".to_string(),
-            server: spec,
-            apps,
-            // ⚠️ **描述里不提某个档位名** —— 这条记录与档位无关（换档位不改它），
-            // 写了档位名就得在每次切换时刷新它，而那正是「不必重启 CLI」要避免的事。
-            description: Some(
-                "用 LoongPort「生图」标签页里当前那个档位生图（gpt-image 系列）。\
-                 由 LoongPort 自动维护，密钥不写进 CLI 配置 —— 换档位也不必重启 CLI。"
-                    .to_string(),
-            ),
-            homepage: None,
-            docs: None,
-            tags: vec!["loongport".into(), "image".into()],
-        },
-    )
+/// 重新对齐生图 MCP。进入生图页时调用，用来修复应用运行期间被外部改掉的投影。
+#[tauri::command]
+pub fn relay_sync_imagegen_mcp(state: State<'_, AppState>) -> Result<(), AppError> {
+    imagegen_mcp::sync_registration(&state)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        collections::HashMap,
+        future::Future,
+        pin::Pin,
+        sync::{Arc, Mutex},
+    };
+
+    use futures::channel::oneshot;
+
+    use crate::relay::model_verification::{
+        coordinator::{
+            ActiveVerifier, ModelVerificationCoordinator, PreparedVerification, ProbeProgress,
+        },
+        types::{
+            EvidenceLevel, RunFailureKind, TargetKey, Verdict, VerificationReport, RULES_VERSION,
+        },
+    };
+
+    fn codex_settings(model: &str, models: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "auth": { "OPENAI_API_KEY": "sk-test" },
+            "config": format!(
+                "model_provider = \"custom\"\nmodel = {model:?}\n\n[model_providers.custom]\nname = \"Test\"\nbase_url = \"https://api.example.com/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
+            ),
+            "modelCatalog": {
+                "models": models.iter().map(|model| serde_json::json!({ "model": model })).collect::<Vec<_>>()
+            }
+        })
+    }
 
     fn provider_with_id(id: &str) -> Provider {
         Provider {
@@ -3041,6 +3196,45 @@ mod tests {
             icon_color: None,
             in_failover_queue: false,
         }
+    }
+
+    #[test]
+    fn codex_model_list_requires_a_real_catalog() {
+        let settings = serde_json::json!({
+            "config": "model_provider = \"custom\"\nmodel = \"gpt-current\"\n"
+        });
+
+        assert!(
+            codex_models_from_settings(&settings).is_empty(),
+            "旧 provider 只有当前模型时，不能把它冒充成完整支持列表"
+        );
+    }
+
+    #[test]
+    fn selecting_a_codex_model_validates_and_only_updates_the_model_field() {
+        let settings = codex_settings("gpt-a", &["gpt-a", "gpt-b"]);
+
+        let selected = select_codex_model(&settings, " gpt-b ").expect("supported model");
+        assert_eq!(
+            provision::extract_model(&selected).as_deref(),
+            Some("gpt-b")
+        );
+        assert_eq!(selected["modelCatalog"], settings["modelCatalog"]);
+        assert_eq!(selected["auth"], settings["auth"]);
+
+        assert!(select_codex_model(&settings, "gpt-unknown").is_err());
+    }
+
+    #[test]
+    fn refreshing_a_managed_codex_tier_keeps_only_a_still_supported_selection() {
+        let defaults = codex_settings("gpt-a", &["gpt-a", "gpt-b"]);
+        let previous = codex_settings("gpt-b", &["gpt-a", "gpt-b"]);
+        let kept = preserve_supported_codex_model(defaults.clone(), &previous);
+        assert_eq!(provision::extract_model(&kept).as_deref(), Some("gpt-b"));
+
+        let removed = codex_settings("gpt-removed", &["gpt-removed"]);
+        let reset = preserve_supported_codex_model(defaults, &removed);
+        assert_eq!(provision::extract_model(&reset).as_deref(), Some("gpt-a"));
     }
 
     /// ⭐ `relay_list_sponsors` 发给前端的**键名**必须是 camelCase。
@@ -3103,6 +3297,8 @@ mod tests {
             group_name: "pro池".into(),
             key_name: Some("LoongPort/a1/anthropic/1".into()),
             display_name: "站 · pro池".into(),
+            model: "claude-sonnet-5".into(),
+            models: vec!["claude-sonnet-5".into()],
             rate_multiplier: Some(1.0),
             is_current: false,
             user_edited: None,
@@ -3136,6 +3332,196 @@ mod tests {
         }
     }
 
+    #[test]
+    fn provision_merge_removes_only_same_app_unmanaged_duplicate() {
+        let db = crate::database::Database::memory().expect("内存库");
+        let app_type = AppType::Codex;
+        let site = "https://relay.example";
+        let key = "sk-same";
+        let settings = provision::settings_config_for(
+            &app_type,
+            key,
+            "Imported",
+            "https://relay.example/v1",
+            "model-a",
+        )
+        .expect("codex 配置");
+
+        let duplicate = Provider {
+            id: "cc-switch-duplicate".into(),
+            name: "Imported duplicate".into(),
+            settings_config: settings.clone(),
+            website_url: Some(site.into()),
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        let different_key = Provider {
+            id: "cc-switch-different-key".into(),
+            name: "Keep different key".into(),
+            settings_config: provision::settings_config_for(
+                &app_type,
+                "sk-other",
+                "Other",
+                "https://relay.example/v1",
+                "model-a",
+            )
+            .expect("codex 配置"),
+            ..duplicate.clone()
+        };
+        let managed_duplicate = Provider {
+            id: provision::provider_id_for(site, Some(1), 42),
+            name: "Managed duplicate".into(),
+            meta: Some(managed_meta(&app_type, Some(1), None, None, None)),
+            ..duplicate.clone()
+        };
+        db.save_provider(app_type.as_str(), &duplicate)
+            .expect("写入重复项");
+        db.save_provider(app_type.as_str(), &different_key)
+            .expect("写入不同 key");
+        db.save_provider(app_type.as_str(), &managed_duplicate)
+            .expect("写入托管项");
+
+        let merged =
+            provider_fingerprint::remove_unmanaged_duplicates(&db, &app_type, &managed_duplicate)
+                .expect("收编不该失败");
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].name, "Imported duplicate");
+        assert!(db
+            .get_provider_by_id("cc-switch-duplicate", app_type.as_str())
+            .expect("查询")
+            .is_none());
+        assert!(db
+            .get_provider_by_id("cc-switch-different-key", app_type.as_str())
+            .expect("查询")
+            .is_some());
+        assert!(db
+            .get_provider_by_id(&managed_duplicate.id, app_type.as_str())
+            .expect("查询")
+            .is_some());
+    }
+
+    #[test]
+    fn provision_merge_reports_when_duplicate_was_current() {
+        let db = crate::database::Database::memory().expect("内存库");
+        let app_type = AppType::Codex;
+        let settings = provision::settings_config_for(
+            &app_type,
+            "sk-current",
+            "Imported",
+            "https://relay.example/v1",
+            "model-a",
+        )
+        .expect("codex 配置");
+        let duplicate = Provider {
+            id: "cc-switch-current".into(),
+            name: "Current imported duplicate".into(),
+            settings_config: settings,
+            website_url: Some("https://relay.example".into()),
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        db.save_provider(app_type.as_str(), &duplicate)
+            .expect("写入当前项");
+        db.set_current_provider(app_type.as_str(), &duplicate.id)
+            .expect("设为当前");
+
+        let managed = Provider {
+            id: provision::provider_id_for("https://relay.example", Some(1), 99),
+            name: "Managed replacement".into(),
+            meta: Some(managed_meta(&app_type, Some(1), None, None, None)),
+            ..duplicate.clone()
+        };
+        db.save_provider(app_type.as_str(), &managed)
+            .expect("写入托管替代项");
+
+        let merged = provider_fingerprint::remove_unmanaged_duplicates(&db, &app_type, &managed)
+            .expect("收编不该失败");
+
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].was_current);
+    }
+
+    #[test]
+    fn provision_merge_never_uses_an_unmanaged_provider_as_the_owner() {
+        let db = crate::database::Database::memory().expect("内存库");
+        let app_type = AppType::Codex;
+        let settings = provision::settings_config_for(
+            &app_type,
+            "sk-shared",
+            "Imported",
+            "https://relay.example/v1",
+            "model-a",
+        )
+        .expect("codex 配置");
+        let imported = Provider {
+            id: "cc-switch-imported".into(),
+            name: "Imported".into(),
+            settings_config: settings.clone(),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        };
+        let non_managed_candidate = Provider {
+            id: "manual-provider".into(),
+            name: "Manual".into(),
+            settings_config: settings,
+            ..imported.clone()
+        };
+        db.save_provider(app_type.as_str(), &imported)
+            .expect("写入导入项");
+        db.save_provider(app_type.as_str(), &non_managed_candidate)
+            .expect("写入手工项");
+
+        assert!(provider_fingerprint::remove_unmanaged_duplicates(
+            &db,
+            &app_type,
+            &non_managed_candidate,
+        )
+        .expect("不该失败")
+        .is_empty());
+        assert!(db
+            .get_provider_by_id(&imported.id, app_type.as_str())
+            .expect("查询")
+            .is_some());
+    }
+
+    #[test]
+    fn provision_summary_reports_adopted_providers_to_the_frontend() {
+        let summary = ProvisionSummary {
+            tiers: Vec::new(),
+            available_groups: Vec::new(),
+            failures: Vec::new(),
+            keys_created: 0,
+            merged_providers: vec![MergedProviderInfo {
+                name: "Imported duplicate".into(),
+                app_id: AppType::Codex.as_str().to_string(),
+            }],
+        };
+
+        let json = serde_json::to_value(summary).expect("应能序列化");
+        assert_eq!(json["mergedProviders"][0]["name"], "Imported duplicate");
+        assert_eq!(json["mergedProviders"][0]["appId"], "codex");
+    }
+
     fn tier(id: &str) -> TierInfo {
         TierInfo {
             provider_id: id.into(),
@@ -3145,6 +3531,8 @@ mod tests {
             group_name: id.into(),
             key_name: None,
             display_name: id.into(),
+            model: "gpt-5.6-sol".into(),
+            models: vec!["gpt-5.6-sol".into()],
             rate_multiplier: None,
             is_current: false,
             // 归属测试不关心它 —— `tiers_of_site` 会自己算出来覆盖掉这个值。
@@ -3424,6 +3812,7 @@ mod tests {
                 api_key_name: format!("key-{group_id}"),
                 key_was_created: false,
                 model: DEFAULT_MODEL.into(),
+                models: None,
                 roles: None,
                 allow_image_generation: false,
             },
@@ -3717,40 +4106,270 @@ mod tests {
     /// 这正是它需要一条测试的原因。
     ///
     /// 会红的改法：把归属判据换回 `creds::load()` / 任何「全局当前」的东西。
-    #[test]
-    fn reset_resolves_the_owning_site_not_the_current_one() {
-        // 判据本身：从 provider 的 `website_url` 认主人，而不是问「现在哪个站是当前」。
-        fn owner_of(existing: &Provider) -> Option<&str> {
-            existing.website_url.as_deref()
+    struct ResetVerifier {
+        senders:
+            Mutex<HashMap<TargetKey, oneshot::Sender<Result<VerificationReport, RunFailureKind>>>>,
+    }
+
+    impl ResetVerifier {
+        fn new() -> Self {
+            Self {
+                senders: Mutex::new(HashMap::new()),
+            }
         }
 
-        let site_a = "https://a.example";
-        let site_b = "https://b.example";
+        fn complete(&self, target: &TargetKey, report: VerificationReport) -> bool {
+            self.senders
+                .lock()
+                .unwrap()
+                .remove(target)
+                .is_some_and(|sender| sender.send(Ok(report)).is_ok())
+        }
+    }
 
-        let tier_of_b = seeded(
-            &provision::provider_id_for(site_b, Some(1), 7),
-            "B 的档位",
-            Some(site_b),
-        );
+    impl ActiveVerifier for ResetVerifier {
+        fn prepare(
+            &self,
+            target: TargetKey,
+            progress: ProbeProgress,
+        ) -> Result<PreparedVerification, RunFailureKind> {
+            let (sender, receiver) = oneshot::channel();
+            self.senders.lock().unwrap().insert(target, sender);
+            let future: Pin<
+                Box<
+                    dyn Future<Output = Result<VerificationReport, RunFailureKind>>
+                        + Send
+                        + 'static,
+                >,
+            > = Box::pin(async move { receiver.await.unwrap() });
+            let future = Box::pin(async move {
+                let result = future.await;
+                if result.is_ok() {
+                    for completed in 1..=3 {
+                        progress(completed);
+                    }
+                }
+                result
+            });
+            Ok(PreparedVerification {
+                total_checks: 3,
+                future,
+            })
+        }
+    }
 
+    fn verification_report(target: TargetKey, verdict: Verdict) -> VerificationReport {
+        VerificationReport {
+            target,
+            verdict,
+            evidence_level: EvidenceLevel::ProtocolBehavior,
+            facts: Vec::new(),
+            rules_version: RULES_VERSION,
+            checked_at: 1_786_214_400,
+        }
+    }
+
+    fn reset_state(valid_key: bool) -> (AppState, Arc<ResetVerifier>, String, String, TargetKey) {
+        let site = "https://reset.example";
+        let db = Arc::new(crate::database::Database::memory().expect("init db"));
+        let verifier = Arc::new(ResetVerifier::new());
+        let mut state = AppState::new(db.clone());
+        state.model_verification = Arc::new(ModelVerificationCoordinator::with_verifier(
+            db.clone(),
+            verifier.clone(),
+        ));
+        let row_id = with_conn(&state, |conn| {
+            creds::save_site(conn, site, "Reset", "https://reset.example/v1")
+        })
+        .expect("save site");
+        with_conn(&state, |conn| {
+            creds::save_credentials(
+                conn,
+                row_id,
+                creds::AccountIdentity {
+                    id: 7,
+                    label: "reset@example.com",
+                    login_identifier: "reset@example.com",
+                },
+                "token",
+                None,
+                None,
+            )
+        })
+        .expect("save credentials");
+
+        let provider_id = provision::provider_id_for(site, Some(7), 1);
+        let other_provider_id = provision::provider_id_for(site, Some(7), 2);
+        let settings_config = if valid_key {
+            provision::settings_config_for(
+                &AppType::Codex,
+                "sk-reset",
+                "Reset tier",
+                "https://reset.example/v1",
+                DEFAULT_MODEL,
+            )
+            .expect("codex config")
+        } else {
+            serde_json::json!({"model_provider":"custom"})
+        };
+        let provider = Provider {
+            settings_config,
+            ..seeded_owned(&provider_id, "Reset tier", Some(site), 7)
+        };
+        db.save_provider("codex", &provider).expect("save provider");
+        db.save_provider(
+            "codex",
+            &Provider {
+                settings_config: provision::settings_config_for(
+                    &AppType::Codex,
+                    "sk-other",
+                    "Other tier",
+                    "https://reset.example/v1",
+                    DEFAULT_MODEL,
+                )
+                .expect("other config"),
+                ..seeded_owned(&other_provider_id, "Other tier", Some(site), 7)
+            },
+        )
+        .expect("save other provider");
+        db.set_user_edited("codex", &provider_id, true)
+            .expect("mark edited");
+
+        let running = TargetKey::new(&provider_id, "codex", "gpt-running");
+        for report in [
+            verification_report(
+                TargetKey::new(&provider_id, "codex", "gpt-a"),
+                Verdict::Suspicious,
+            ),
+            verification_report(
+                TargetKey::new(&provider_id, "codex", "gpt-b"),
+                Verdict::Anomaly,
+            ),
+            verification_report(
+                TargetKey::new(&other_provider_id, "codex", "gpt-other"),
+                Verdict::Trusted,
+            ),
+        ] {
+            crate::relay::model_verification::store::upsert_active(&db, &report)
+                .expect("seed verification report");
+        }
+
+        (state, verifier, provider_id, other_provider_id, running)
+    }
+
+    #[tokio::test]
+    async fn reset_tier_config_validation_failure_cancels_run_but_preserves_all_reports() {
+        let (state, verifier, provider_id, other_provider_id, running) = reset_state(false);
+        state
+            .model_verification
+            .start(running.clone())
+            .await
+            .expect("start run");
+
+        let error = reset_tier_config_in_state(&state, &provider_id, AppType::Codex)
+            .expect_err("missing key must reject reset");
+
+        assert!(error.to_string().contains("密钥"));
         assert_eq!(
-            owner_of(&tier_of_b),
-            Some(site_b),
-            "B 的档位必须认 B 作主人 —— 哪怕此刻的「当前站」是 A"
+            state
+                .model_verification
+                .list_results(&[provider_id.clone(), other_provider_id.clone()])
+                .expect("list reports")
+                .len(),
+            3
         );
-        assert_ne!(
-            owner_of(&tier_of_b),
-            Some(site_a),
-            "绝不能解析到别的站：那会把 B 的 sk 配上 A 的端点，每次调用都 401"
+        let _ = verifier.complete(
+            &running,
+            verification_report(running.clone(), Verdict::Trusted),
         );
+        tokio::task::yield_now().await;
+        assert_eq!(
+            state
+                .model_verification
+                .list_results(&[provider_id, other_provider_id])
+                .expect("reports after late completion")
+                .len(),
+            3
+        );
+    }
 
-        // 没有 website_url 的档位（旧版本写的脏记录）要报错而不是猜一个站 ——
-        // 猜错的代价与上面那条一样，而且用户根本不知道发生了什么。
-        let orphan = seeded("loongport-orphan", "没有归属", None);
-        assert!(
-            owner_of(&orphan).is_none(),
-            "认不出主人时必须为 None（调用方据此报错引导重新获取密钥），不能回落到当前站"
+    #[tokio::test]
+    async fn reset_tier_config_save_failure_cancels_run_but_preserves_all_reports() {
+        let (state, verifier, provider_id, other_provider_id, running) = reset_state(true);
+        state
+            .model_verification
+            .start(running.clone())
+            .await
+            .expect("start run");
+        state
+            .db
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_reset BEFORE UPDATE ON providers
+                 BEGIN SELECT RAISE(FAIL, 'reject reset'); END;",
+            )
+            .expect("install failure trigger");
+
+        let error = reset_tier_config_in_state(&state, &provider_id, AppType::Codex)
+            .expect_err("provider save must fail");
+
+        assert!(matches!(error, AppError::Database(_)));
+        assert_eq!(
+            state
+                .model_verification
+                .list_results(&[provider_id.clone(), other_provider_id.clone()])
+                .expect("list reports")
+                .len(),
+            3
         );
+        let _ = verifier.complete(
+            &running,
+            verification_report(running.clone(), Verdict::Trusted),
+        );
+        tokio::task::yield_now().await;
+        assert_eq!(
+            state
+                .model_verification
+                .list_results(&[provider_id, other_provider_id])
+                .expect("reports after late completion")
+                .len(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_tier_config_success_clears_only_target_scope_and_rejects_late_completion() {
+        let (state, verifier, provider_id, other_provider_id, running) = reset_state(true);
+        state
+            .model_verification
+            .start(running.clone())
+            .await
+            .expect("start run");
+
+        reset_tier_config_in_state(&state, &provider_id, AppType::Codex).expect("reset succeeds");
+
+        let rows = state
+            .model_verification
+            .list_results(&[provider_id.clone(), other_provider_id.clone()])
+            .expect("list reports");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target.provider_id, other_provider_id);
+        assert!(!state
+            .db
+            .get_user_edited("codex", &provider_id)
+            .expect("edited flag"));
+        let _ = verifier.complete(
+            &running,
+            verification_report(running.clone(), Verdict::Trusted),
+        );
+        tokio::task::yield_now().await;
+        assert!(state
+            .model_verification
+            .list_results(&[provider_id])
+            .expect("target reports")
+            .is_empty());
     }
 
     /// 备份是「删 auth.json」之前的唯一后路，所以它必须真的把内容拷出来。
@@ -3839,9 +4458,10 @@ mod tests {
     ///
     /// ## 为什么这条测试读源码而不是调函数
     ///
-    /// `do_provision` 与 `reset_tier_config_impl` 都吃 `&tauri::AppHandle`，单测与集成
-    /// 测试里都造不出来 ⇒ 命令层这一步**没有任何测试能直接执行到**。第二路 review 实测
-    /// 证明了这个盲区的代价：把那两处调用注释掉，2578 条测试**全绿**——
+    /// `do_provision` 仍吃 `&tauri::AppHandle`；reset 的数据库与协调器路径已经下沉到
+    /// `reset_tier_config_in_state` 并由真实行为测试覆盖，但“当前项刷新 live 文件”会触碰
+    /// 用户配置，单元测试不能安全执行。第二路 review 实测证明了这条接线盲区的代价：
+    /// 把那两处调用注释掉，2578 条测试**全绿**——
     /// 那条集成测试（`loongport_codex_live.rs`）自己调服务层，所以它测的是服务层，
     /// 不是「命令层有没有调服务层」。
     ///
@@ -3868,11 +4488,11 @@ mod tests {
              sk 被撤销重建后，CLI 会一直用旧密钥，而用户点不动那个档位（UI 认为它已是当前项）"
         );
 
-        // 取 `reset_tier_config_impl` 那段。
+        // 取真正执行重置的 state helper 那段。
         let reset = {
             let start = src
-                .find("async fn reset_tier_config_impl")
-                .expect("reset_tier_config_impl 还在吗");
+                .find("fn reset_tier_config_in_state")
+                .expect("reset_tier_config_in_state 还在吗");
             let end = src[start..]
                 .find("\n/// 保存中转站行的手工顺序")
                 .expect("reset 之后那个命令还在吗");

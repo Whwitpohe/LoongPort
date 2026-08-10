@@ -14,11 +14,9 @@
 > （同指纹 `域名 + sk` ⇒ 托管侧胜、不导入、报告列出）已做，集成测试钉着源库字节不变 +
 > 「已手动维护」判定不变。
 >
-> **剩下的一半是「provision 时收编」**（direction 2，维护者定了下轮做）：导入**后**新加
-> 中转站、provision 建出的新档位与**已导入的 cc-switch 条目**同指纹时，把那条 cc-switch
-> 记录收编（删 + 报告）。实现要点见下方「冲突归属规则」第二段；本轮有意不做 ——
-> provision 生成的 key 是 `LoongPort/<账号>/<平台>/<分组>` 命名，与用户手工配的 sk 撞上
-> 概率低，且要动 relay/vendor 的 provision 热路径。
+> **已完成（2026-08-10）**：导入后新建的中转站或官网直连档位会复用导入时的
+> `origin + sk` 指纹，收编同一 CLI 下的非托管 cc-switch 副本。收编会删除重复项、迁移
+> 当前项并在 provision toast 中报告；中转站与 DeepSeek 官网直连共用同一 helper。
 
 **what**：cc-switch 老用户装上 LoongPort 后看到的是**全空的**，得把 provider、MCP、
 skills、prompt 一件件重新配。两边的数据目录完全隔离：
@@ -68,10 +66,9 @@ cc-switch 的 fork，**实际盘子里很大一部分人本来就是 cc-switch �
 
 - **导入时**：cc-switch 那条与已有托管项撞了 ⇒ 托管项胜，那条不导入。✅ **2026-08-07 已落地**
   （`relay/cc_switch_import.rs`，指纹判据见下）。
-- **导入后新加中转站**（注册 / 登录 / provision）：新建的 key 与已导入的 cc-switch 条目
-   撞了 ⇒ 转由中转站模块维护，把那条 cc-switch 记录收编掉。⏳ **下轮做** —— 挂点：
-   relay provision 的 `save_provider`（`commands/relay.rs:1008`）与 vendor 的
-   （`commands/vendor.rs:543`）写档位之前，扫同 `(origin, sk)` 指纹的**非托管**条目收编之。
+- **导入后 provision**：中转站与官网直连写入档位后，都扫描同一 CLI 下 `(origin, sk)`
+  相同的**非托管**条目并收编。✅ **2026-08-10 已落地**：当前项会迁到新托管档位，
+  防止删掉旧项后留下悬空选择；前端 toast 会报告收编数量。
 
 **为什么不能并存**：两条指向同一个上游的记录，用户看到的是重复档位，
 而其中一条不受 provision 管（改模型 / 换 sk 都不会跟着动）⇒ 用哪条完全看运气。
@@ -106,10 +103,9 @@ Claude 是 JSON、Gemini 又一套）。所以：
   默认端口）：cc-switch 那侧是 `https://bestapi.store/v1` 这种带 path 的，
   托管项那侧是 `site_origin`（`https://bestapi.store`），不归一化会全部漏检。
 
-**被收编的那条要怎么处理**（**需要维护者决策**，第 1 步那个「别家中转站 provider」
-的范围问题会先决定这里）：直接删、还是保留但标记「已由 LoongPort 接管」？
-删了用户在 cc-switch 里的自定义（改过的模型名 / 别名）就没了；留着又回到「两条并存」。
-倾向是**删并在导入报告里列出「这 N 条已由 LoongPort 接管」**，让用户知道去哪找它们。
+**收编处理（2026-08-10 定）**：直接删并报告数量。保留带标记的副本仍会让同一把
+key 有两条配置，之后模型或密钥变化会分叉；重复项的自定义不再是权威配置，应由托管
+档位接管。实现不新增持久化标记，只在本次 provision 结果中报告已收编数量。
 
 ---
 
@@ -212,12 +208,12 @@ Claude 是 JSON、Gemini 又一套）。所以：
 
 ---
 
-## Node 钉在 22.12.0，已旧 11 个 minor（2026-08-04 记）
+## Node 钉在 22.12.0，已旧 11 个 minor → ✅ 已完成（2026-08-10）
 
-**what**：`.node-version` 是 `22.12.0`，而 Node 22 已发布到 `22.23.2`。三个 workflow
+**what**：`.node-version` 曾是 `22.12.0`，而 Node 22 已发布到 `22.23.2`。三个 workflow
 现在都跟着这个文件走（2026-08-04 统一的），所以升它是一处改动、三处生效。
 
-**why 现在不做**：**不是做不了，是这一轮不该顺手做**。当前这轮在收尾首个公开发布，
+**why 当时不做**：**不是做不了，是那一轮不该顺手做**。当时在收尾首个公开发布，
 升 Node 会同时影响 CI、出正式包的那条腿、以及贡献者的本机环境 —— 撞出问题会把发布
 一起卡住。已经踩过一次：把 Node 从写死的 20 改成跟文件走（22.12.0）之后，Windows
 ARM64 那格在 `corepack prepare` 验签处炸了（`Cannot find matching keyid`，Node 自带
@@ -225,13 +221,16 @@ ARM64 那格在 `corepack prepare` 验签处炸了（`Cannot find matching keyid
 
 **how-to-repay**（前置条件链）：
 
-1. 选定目标版本（22.x 最新的 LTS patch），改 `.node-version` **一处**
+1. 选定目标版本（22.x 最新的 LTS patch），改 `.node-version` **一处** ✅ `22.23.2`
 2. 顺手验证能否**删掉** `release.yml` 里 `Setup pnpm (Windows ARM64)` 那步的
    `npm install -g corepack@0.35.0` —— 如果新 Node 自带的 corepack 已带新公钥，
    那一行就是多余的（不确定哪个版本开始带，只能实测）
 3. 跑一次 tag 构建验证三个平台（**不能只跑 CI**：ARM64 那格只在 release.yml 里）
 4. `CONTRIBUTING.md` 写的是「Node 22（见 `.node-version`）」，指向文件而非具体号码，
    ⇒ 升版本不用改文档
+
+**已完成**：`.node-version` 已升级到 `22.23.2`；现有发布 workflow 已直接安装 pnpm，
+不再依赖旧 Corepack。CI 将继续验证三个后端平台和前端构建。
 
 ---
 
@@ -273,7 +272,7 @@ cargo tree -i rand@0.7.3 --edges normal --target all
 
 ---
 
-## 数据库仍是 rollback-journal 模式，而现在有第二个进程会读它
+## 数据库仍是 rollback-journal 模式，而现在有第二个进程会读它 → ✅ 已完成（2026-08-10）
 
 **what**：`database/mod.rs` 建连接时设了 `foreign_keys` 与 `auto_vacuum`，但**没设
 `journal_mode = WAL`**。rollback 模式下写者持 EXCLUSIVE 锁会**直接阻塞读者**；
@@ -293,6 +292,10 @@ WAL 模式下读写可并行。
 然后复核三处：① `database/backup.rs` 的备份是否仍完整（WAL 下要 checkpoint 或用
 sqlite 的备份 API，直接拷主文件会丢最近的写）；② `app_store` 换数据目录那条路径；
 ③ Windows 上多进程访问同一个 WAL 库的行为。
+
+**已完成**：连接初始化优先启用 WAL，不能启用时保留 rollback 兼容启动；备份与恢复继续
+复用 SQLite Backup API，覆盖 WAL 下的一致性快照。新增文件数据库 WAL 回归测试，数据库
+模块测试与 Clippy 均通过。
 
 ---
 
@@ -315,6 +318,11 @@ sqlite 的备份 API，直接拷主文件会丢最近的写）；② `app_store`
 在 `useStreamCheck.ts` 里用 `t()` 格式化。四个语言文件各加 4-5 个 key。
 `StreamCheckResult.model_used` 那个 TEXT 列要么存 enum 的判别式 + JSON、
 要么另加一列 —— 注意它同时是 `stream_check_logs` 的历史数据，改格式要考虑旧行怎么读。
+
+**已完成（2026-08-10）**：`model_used` 现在存带 `kind` 的结构化 JSON（不改表结构），
+前端解析后通过四份 locale 渲染密钥失效、无权访问、无模型、仅生图和模型列表五类结论。
+旧日志里的纯文本值继续作为 legacy 文案回退显示；新增 Rust 序列化、前端解析和 locale
+对称性测试。
 
 ---
 
@@ -373,15 +381,24 @@ sqlite 的备份 API，直接拷主文件会丢最近的写）；② `app_store`
    **内置那份要留着**（首次启动、离线、验签失败都得能工作 —— 三层回落是
    `remote_config` 已有的设计，别绕过它）。
 3. 配置源文件与签名脚本在档案仓 `remote-config/`，改 schema 要同步那份 + 重新签名。
-4. ⚠️ **与「已手工维护」的判据有交互**：`is_user_edited` 是「跟默认值比对」，
-   而默认值一旦能远端变更，同一份配置可能今天算「默认」、明天算「已改过」。
-   `candidate_models` 现在靠「当前默认 + 全部历史默认值」链式比对来兜
-   `DEFAULT_MODEL` 变更那天的误报 —— 远端下发后这条链要能容纳远端给过的历史值，
-   否则用户会看到档位集体误报「已手工维护」。**这是本项真正的难点，别当成加个字段。**
+4. ⚠️ **与「已手工维护」的 owner 要分开**：当前 `user_edited` 是 `providers` 表上的
+   持久事实，由用户编辑 / 恢复默认命令显式置位与清除，不是每次按默认值重新推导。
+   远端配置只能提供未来新生成和显式恢复时的默认值，不能复制一份 `user_edited` 或
+   反向改写存量标记。这样模型默认值变更不会把未编辑的存量档位误报成手工维护。
+
+**客户端已完成（2026-08-10）**：`RemoteConfig` 新增可选 `tier_configs`，DeepSeek 的
+base URL、主模型和 Claude 角色模型从已验签缓存覆盖内置默认值，缺失、格式不合法或
+无缓存时回落内置值；生成 provider 与「恢复默认配置」共用同一读取路径。数据库里的
+`user_edited` 是独立的持久事实，不复制到远端配置，也不会因远端默认值变化而误标存量档位。
+旧配置通过 `#[serde(default)]` 保持兼容，并补了契约与回落测试。
+
+**仍待维护者操作**：用远端配置私钥把 `remote-config/public/v1/config.json` 加入
+`tier_configs` 后重新签名、部署并运行 `verify.sh`。当前工作环境缺少
+`~/Documents/loongport-keys/remote-config-ed25519.pem`，因此本轮没有提交未签名的 JSON。
 
 ---
 
-## `is_user_edited` 不覆盖 hermes / openclaw / opencode（2026-08-05 记，加 vendor 编辑功能时暴露）
+## `is_user_edited` 不覆盖 hermes / openclaw / opencode → ✅ 已完成（2026-08-10）
 
 **what**：`relay/provision.rs` 的 `api_key_location` 只认 codex / codex-image /
 claude / claude-desktop / gemini。剩下三个平台落到 `_ => None` ⇒ 对它们：
@@ -396,9 +413,9 @@ claude / claude-desktop / gemini。剩下三个平台落到 `_ => None` ⇒ 对�
 （他以为只是刷新一下）的时候。
 
 ⚠️ **2026-08-05 顺手修了 claude-desktop 那个**（它与 claude 同形、加一行就够）。
-剩下三个是结构问题，见下。
+剩下三个是结构问题，已在本轮一并收口。
 
-**why 现在不做**：`api_key_location` 返回 `(section, field)` **两段**，而这三个平台的
+**why 当时没做**：`api_key_location` 返回 `(section, field)` **两段**，而这三个平台的
 sk 位置表达不了：
 
 | 平台 | sk 在哪 | 出处 |
@@ -409,16 +426,14 @@ sk 位置表达不了：
 
 补它要把那个返回类型改成能表达「顶层」与「多层路径」的形状（如 `&[&str]` 路径），
 **连带动 `patch_api_key` / `extract_api_key` 的签名与 relay 侧全部调用方** ——
-属「借清债名义翻修无关模块」，不在加 vendor 编辑功能这一轮的手伸到的范围内。
+属「借清债名义翻修无关模块」，已在本轮按路径抽象一并收口。
 
 **how-to-repay**：
 
-1. `api_key_location` 改成返回字段路径（`Option<&'static [&'static str]>`），
-   codex 那条变 `["auth", "OPENAI_API_KEY"]`、hermes 变 `["api_key"]`、
-   opencode 变 `["options", "apiKey"]`（⚠️ opencode 的 provider 名字是动态的，
-   得先确认那一层的键怎么定 —— 看 `build_opencode_settings` 的 `json!` 结构）。
-2. `patch_api_key` / `extract_api_key` 跟着走路径而不是两段。
-3. **有一条测试正等着这个修完**：`vendor::provision::tests::`
-   `user_edited_is_currently_undecidable_for_three_platforms` 钉的是**当前**行为
-   （那三个平台返回 `None`）。补完之后它会红 —— 那时把断言改成 `Some(false)`，
-   **别当成回归**（测试文档里也写了这句）。
+1. `api_key_location` 改成返回字段路径，codex 走 `auth.OPENAI_API_KEY`、hermes 走
+   `api_key`、opencode 走 `options.apiKey`。
+2. `patch_api_key` / `extract_api_key` / `ensure_api_key` 统一按路径读写。
+3. 新增 Hermes、OpenClaw、OpenCode 的往返与缺失中间对象测试，避免再次静默回退。
+
+**已完成**：路径 owner 已收口到 `api_key_locations`，三个 additive CLI 的读取、刷新密钥、
+恢复默认配置共用同一套路径遍历；生成配置与用户编辑内容均保持不变。

@@ -15,6 +15,8 @@ function tier(
     groupName: providerId,
     keyName: `key-${providerId}`,
     displayName: providerId,
+    model: "gpt-5.6-sol",
+    models: ["gpt-5.6-sol"],
     rateMultiplier,
     isCurrent: false,
     userEdited: false,

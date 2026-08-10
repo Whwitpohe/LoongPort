@@ -139,6 +139,8 @@ describe("数出落在当前平台的档位", () => {
         groupName: `g${i}`,
         keyName: null,
         displayName: `g${i}`,
+        model: "gpt-5.6-sol",
+        models: ["gpt-5.6-sol"],
         rateMultiplier: null,
         isCurrent: false,
         userEdited: null,
@@ -148,6 +150,7 @@ describe("数出落在当前平台的档位", () => {
       availableGroups: [],
       failures: [],
       keysCreated: 0,
+      mergedProviders: [],
     };
   }
 
@@ -187,6 +190,8 @@ describe("批量刷新的档位计数", () => {
         groupName: `g${i}`,
         keyName: null,
         displayName: `g${i}`,
+        model: "gpt-5.6-sol",
+        models: ["gpt-5.6-sol"],
         rateMultiplier: null,
         isCurrent: false,
         userEdited: null,
@@ -196,6 +201,7 @@ describe("批量刷新的档位计数", () => {
       availableGroups: [],
       failures: [],
       keysCreated: 0,
+      mergedProviders: [],
     };
   }
 

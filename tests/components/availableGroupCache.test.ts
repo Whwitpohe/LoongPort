@@ -23,7 +23,13 @@ function group(
 }
 
 function summary(...availableGroups: AvailableGroupInfo[]): ProvisionSummary {
-  return { tiers: [], availableGroups, failures: [], keysCreated: 0 };
+  return {
+    tiers: [],
+    availableGroups,
+    failures: [],
+    keysCreated: 0,
+    mergedProviders: [],
+  };
 }
 
 describe("刷新结果合并到分组下拉缓存", () => {

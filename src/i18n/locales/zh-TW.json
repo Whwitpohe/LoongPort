@@ -2774,7 +2774,14 @@
     "timeout": "逾時時間（秒）",
     "maxRetries": "最大重試次數",
     "degradedThreshold": "緩慢閾值（毫秒）",
-    "error": "{{providerName}} 檢查出錯：{{error}}"
+    "error": "{{providerName}} 檢查出錯：{{error}}",
+    "modelProbe": {
+      "keyExpired": "金鑰已失效（{{status}}）",
+      "forbidden": "此檔位無權存取模型清單（{{status}}）",
+      "noModels": "此檔位沒有可呼叫的模型",
+      "imageOnly": "只能生成圖片（{{models}}），不能對話",
+      "models": "{{total}} 個模型（{{models}}）"
+    }
   },
   "proxyConfig": {
     "proxyEnabled": "路由總開關",
@@ -3106,6 +3113,9 @@
       "currentConfig": "目前設定",
       "actualRate": "實際 {{value}} 倍",
       "actualRateHint": "實際倍率 = 目前扣費倍率 ÷ 儲值到帳比例（不含手續費）",
+      "models": "支援的模型",
+      "selectModel": "切換至模型 {{model}}",
+      "modelSelected": "目前模型",
       "switching": "切換中…",
       "checkConnectivity": "檢測連通",
       "resetConfig": "恢復預設設定",
@@ -3149,6 +3159,7 @@
       "readyWithKeys": "已備好 {{count}} 個方案，新建 {{keys}} 把金鑰",
       "landedOnOtherPlatforms": "這個帳號有 {{count}} 個分組，但都不屬於目前這個 CLI。切到上方對應的標籤頁查看。",
       "groupFailed": "{{group}}：{{reason}}",
+      "mergedProviders": "已從 cc-switch 收編 {{count}} 個重複設定",
       "refreshed": "已重新整理 {{relays}} 個中轉站，共 {{tiers}} 個方案",
       "refreshFailedWithReason": "{{name}} 重新整理失敗：{{reason}}",
       "refreshedWithKeys": "已重新整理 {{relays}} 個中轉站，共 {{tiers}} 個檔位，新建 {{keys}} 把金鑰"
@@ -3156,7 +3167,10 @@
     "switch": {
       "done": "已切換到 {{name}}",
       "doneRelaunched": "已切換到 {{name}}，已重新開啟 ChatGPT",
-      "doneNeedsRestart": "已切換到 {{name}}，請手動重啟 ChatGPT"
+      "doneNeedsRestart": "已切換到 {{name}}，請手動重啟 ChatGPT",
+      "modelDone": "已切換至 {{name}} 的模型 {{model}}",
+      "modelDoneRelaunched": "已切換至 {{name}} 的模型 {{model}}，已重新開啟 ChatGPT",
+      "modelDoneNeedsRestart": "已切換至 {{name}} 的模型 {{model}}，請手動重啟 ChatGPT"
     },
     "official": {
       "button": "切回官方登入",
@@ -3211,6 +3225,86 @@
       "howTo": "換生圖檔位不用重啟 CLI，下一次生成就用新的。只有第一次有生圖檔位時要新開一個終端，讓 codex 讀到那個工具。",
       "emptyTitle": "還沒有生圖檔位",
       "emptyBody": "生圖檔位由「取得密鑰」自動識別：中轉站那邊有只掛 gpt-image 模型的分組時，它就出現在這裡。你的站點可能沒有提供生圖分組 —— 那樣這一頁保持空著就好，CLI 的設定裡不會多出任何東西。"
+    },
+    "modelVerification": {
+      "title": "模型驗證",
+      "titleWithTier": "驗證模型 · {{tierName}}",
+      "description": "驗證這個供應商已設定的一個模型。",
+      "globalScopeNote": "對所有已設定模型啟用自動驗證。",
+      "model": {
+        "label": "選擇模型",
+        "placeholder": "請選擇模型",
+        "loading": "正在載入模型…",
+        "empty": "沒有可驗證的模型",
+        "error": "模型清單載入失敗"
+      },
+      "actions": { "start": "開始驗證", "stop": "停止驗證", "retry": "重試" },
+      "status": { "running": "正在驗證 {{completed}} / {{total}}" },
+      "runtime": {
+        "autoLabel": "執行時自動檢測（全域）",
+        "autoHelp": "對所有中轉分組和模型生效。開啟後，LoongPort 會透過本機代理觀察 Codex 和 Claude 的實際回應；不會額外發送檢測請求，也不會保存對話內容。",
+        "loadError": "執行時檢測狀態載入失敗",
+        "anomalyToast": "{{app}} 的模型 {{model}} 檢測到異常，請開啟模型驗證查看。",
+        "apps": { "codex": "Codex", "claude": "Claude" },
+        "status": { "active": "已啟用", "waiting": "等待中", "error": "錯誤" }
+      },
+      "history": {
+        "title": "最近 5 筆驗證記錄",
+        "loading": "正在載入驗證記錄…",
+        "empty": "暫無驗證記錄",
+        "error": "驗證記錄載入失敗",
+        "source": { "active": "主動檢測", "runtime": "使用時檢測" }
+      },
+      "tierVerdict": {
+        "trusted": "模型已驗證",
+        "suspicious": "模型存疑",
+        "anomaly": "模型異常",
+        "trustedHint": "模型驗證通過，請點擊「模型驗證」查看詳情",
+        "suspiciousHint": "模型驗證結果存疑，請點擊「模型驗證」查看詳情",
+        "anomalyHint": "模型驗證發現異常，請點擊「模型驗證」查看詳情"
+      },
+      "verdict": {
+        "trusted": "可信",
+        "suspicious": "可疑",
+        "anomaly": "異常",
+        "inconclusive": "結論不足"
+      },
+      "evidence": {
+        "title": "驗證依據",
+        "level": {
+          "cryptographic": "密碼學依據",
+          "protocolBehavior": "協定行為依據",
+          "insufficient": "依據不足"
+        },
+        "outcome": {
+          "passed": "通過",
+          "failed": "未通過",
+          "skipped": "已跳過"
+        },
+        "fact": {
+          "basicEnvelope": "基礎回應結構",
+          "modelMatch": "模型身分",
+          "streamLifecycle": "串流回應生命週期",
+          "usageConsistency": "用量一致性",
+          "toolCallShape": "工具呼叫結構",
+          "structuredOutput": "結構化輸出",
+          "thinkingSignature": "推理特徵",
+          "signatureContinuation": "特徵延續",
+          "foreignProtocol": "外部協定",
+          "foreignSelfIdentification": "外部自我識別"
+        }
+      },
+      "failure": {
+        "authentication": "驗證失敗",
+        "rateLimited": "供應商限制了本次驗證",
+        "insufficientBalance": "餘額不足，無法驗證此模型",
+        "network": "網路連線失敗",
+        "upstream": "供應商無法完成驗證",
+        "timeout": "驗證逾時",
+        "modelUnavailable": "此模型不可用",
+        "cancelled": "驗證已停止",
+        "invalidResponse": "供應商回傳了無效回應"
+      }
     }
   }
 }

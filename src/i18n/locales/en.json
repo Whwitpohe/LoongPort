@@ -2773,7 +2773,14 @@
     "timeout": "Timeout (seconds)",
     "maxRetries": "Max Retries",
     "degradedThreshold": "Slow-response threshold (ms)",
-    "error": "{{providerName}} check error: {{error}}"
+    "error": "{{providerName}} check error: {{error}}",
+    "modelProbe": {
+      "keyExpired": "API key expired ({{status}})",
+      "forbidden": "This tier cannot access the models endpoint ({{status}})",
+      "noModels": "This tier has no callable models",
+      "imageOnly": "Image generation only ({{models}}); chat is unavailable",
+      "models": "{{total}} models ({{models}})"
+    }
   },
   "proxyConfig": {
     "proxyEnabled": "Routing Master Switch",
@@ -3105,6 +3112,9 @@
       "currentConfig": "Current config",
       "actualRate": "Actual {{value}}x",
       "actualRateHint": "Actual rate = current billing rate / balance credit multiplier (fees excluded)",
+      "models": "Supported models",
+      "selectModel": "Switch to model {{model}}",
+      "modelSelected": "Current model",
       "switching": "Switching…",
       "checkConnectivity": "Check connectivity",
       "resetConfig": "Restore default config",
@@ -3148,6 +3158,7 @@
       "readyWithKeys": "{{count}} tier(s) ready, {{keys}} key(s) created",
       "landedOnOtherPlatforms": "This account has {{count}} group(s), but none of them are for the current CLI. Switch to the matching tab above to see them.",
       "groupFailed": "{{group}}: {{reason}}",
+      "mergedProviders": "Adopted {{count}} duplicate provider(s) from cc-switch",
       "refreshed": "Refreshed {{relays}} relay(s), {{tiers}} tier(s) total",
       "refreshFailedWithReason": "Failed to refresh {{name}}: {{reason}}",
       "refreshedWithKeys": "Refreshed {{relays}} relay(s), {{tiers}} tier(s) total, {{keys}} new key(s)"
@@ -3155,7 +3166,10 @@
     "switch": {
       "done": "Switched to {{name}}",
       "doneRelaunched": "Switched to {{name}}, ChatGPT reopened",
-      "doneNeedsRestart": "Switched to {{name}} — please restart ChatGPT manually"
+      "doneNeedsRestart": "Switched to {{name}} — please restart ChatGPT manually",
+      "modelDone": "Switched {{name}} to model {{model}}",
+      "modelDoneRelaunched": "Switched {{name}} to model {{model}}, ChatGPT reopened",
+      "modelDoneNeedsRestart": "Switched {{name}} to model {{model}} — please restart ChatGPT manually"
     },
     "official": {
       "button": "Switch back to official login",
@@ -3210,6 +3224,90 @@
       "howTo": "Switching image tiers needs no CLI restart — the next generation uses the new one. Only the very first image tier requires a fresh terminal so codex picks up the tool.",
       "emptyTitle": "No image tiers yet",
       "emptyBody": "Image tiers are detected automatically when you fetch keys: if your relay has a group that only serves gpt-image models, it shows up here. Your site may not offer image groups at all — then this page simply stays empty and nothing is added to your CLI config."
+    },
+    "modelVerification": {
+      "title": "Verify model",
+      "titleWithTier": "Verify model · {{tierName}}",
+      "description": "Run a verification against one model configured for this provider.",
+      "globalScopeNote": "Apply automatic verification to all configured models.",
+      "model": {
+        "label": "Model",
+        "placeholder": "Select a model",
+        "loading": "Loading models…",
+        "empty": "No models are available to verify.",
+        "error": "Could not load models."
+      },
+      "actions": {
+        "start": "Start verification",
+        "stop": "Stop verification",
+        "retry": "Retry"
+      },
+      "status": { "running": "Verifying {{completed}} / {{total}}" },
+      "runtime": {
+        "autoLabel": "Automatic runtime verification (global)",
+        "autoHelp": "Applies to all relay groups and models. LoongPort observes actual Codex and Claude responses through the local proxy; it sends no extra probes and never saves conversation content.",
+        "loadError": "Could not load runtime verification status.",
+        "anomalyToast": "An anomaly was detected for {{app}} model {{model}}. Open Verify model for details.",
+        "apps": { "codex": "Codex", "claude": "Claude" },
+        "status": { "active": "Active", "waiting": "Waiting", "error": "Error" }
+      },
+      "history": {
+        "title": "Latest 5 verification results",
+        "loading": "Loading verification results…",
+        "empty": "No verification results yet.",
+        "error": "Could not load verification results.",
+        "source": { "active": "Active check", "runtime": "Runtime check" }
+      },
+      "tierVerdict": {
+        "trusted": "Model verified",
+        "suspicious": "Model suspicious",
+        "anomaly": "Model anomaly",
+        "trustedHint": "Model verification passed. Select Verify model for details.",
+        "suspiciousHint": "Verification found suspicious behavior. Select Verify model for details.",
+        "anomalyHint": "Verification found an anomaly. Select Verify model for details."
+      },
+      "verdict": {
+        "trusted": "Trusted",
+        "suspicious": "Suspicious",
+        "anomaly": "Anomaly",
+        "inconclusive": "Inconclusive"
+      },
+      "evidence": {
+        "title": "Evidence",
+        "level": {
+          "cryptographic": "Cryptographic evidence",
+          "protocolBehavior": "Protocol behavior evidence",
+          "insufficient": "Insufficient evidence"
+        },
+        "outcome": {
+          "passed": "Passed",
+          "failed": "Failed",
+          "skipped": "Skipped"
+        },
+        "fact": {
+          "basicEnvelope": "Basic response envelope",
+          "modelMatch": "Model identity",
+          "streamLifecycle": "Streaming lifecycle",
+          "usageConsistency": "Usage consistency",
+          "toolCallShape": "Tool-call shape",
+          "structuredOutput": "Structured output",
+          "thinkingSignature": "Reasoning signature",
+          "signatureContinuation": "Signature continuation",
+          "foreignProtocol": "Foreign protocol",
+          "foreignSelfIdentification": "Foreign self-identification"
+        }
+      },
+      "failure": {
+        "authentication": "Authentication failed.",
+        "rateLimited": "The provider rate limited this verification.",
+        "insufficientBalance": "Insufficient balance to verify this model.",
+        "network": "Network connection failed.",
+        "upstream": "The provider could not complete verification.",
+        "timeout": "Verification timed out.",
+        "modelUnavailable": "This model is unavailable.",
+        "cancelled": "Verification was stopped.",
+        "invalidResponse": "The provider returned an invalid response."
+      }
     }
   }
 }

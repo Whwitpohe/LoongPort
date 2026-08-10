@@ -112,6 +112,10 @@ pub struct Tier {
     /// **不是常量** —— 纯生图分组要写它自己的 `gpt-image-*`，写 [`DEFAULT_MODEL`]
     /// 会让它选中即 404。
     pub model: String,
+    /// The model identifiers returned by this tier's `/v1/models` endpoint.
+    /// `None` means the endpoint was unavailable, so the UI must not claim a
+    /// complete supported-model list.
+    pub models: Option<Vec<String>>,
     /// claude 平台各角色模型（由 [`pick_tier_models`] 按该分组模型列表挑出）。
     ///
     /// 其余平台 `None`（它们的配置没有 haiku/sonnet/opus 这套角色别名）。
@@ -346,7 +350,7 @@ async fn ensure_key_for(
     // 为一个「模型名可能不理想」中断整个分组的 provision 是把小问题放大成大问题
     // （用户会看到「获取密钥失败」而不是「某个档位模型名不对」）。
     let models = match super::api::list_models(client.site_origin(), &api_key).await {
-        Ok(v) => v,
+        Ok(v) => v.map(normalize_model_names),
         Err(e) => {
             log::debug!(
                 "分组 {}（{}）的模型列表拉不到，模型名回落默认值（不影响使用）: {e}",
@@ -378,9 +382,24 @@ async fn ensure_key_for(
         api_key_name,
         key_was_created: created,
         model: picked.main,
+        models,
         roles: picked.claude_roles,
         allow_image_generation: group.allow_image_generation,
     })
+}
+
+/// Normalize a provider model list before it becomes persisted configuration.
+/// API responses are not guaranteed to be ordered and may contain duplicate or
+/// blank ids; keeping one stable, trimmed copy prevents noisy catalog changes.
+pub fn normalize_model_names(models: Vec<String>) -> Vec<String> {
+    let mut normalized: Vec<String> = models
+        .into_iter()
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+        .collect();
+    normalized.sort();
+    normalized.dedup();
+    normalized
 }
 
 /// 档位排序：倍率从低到高（便宜的在前），同倍率按分组 id 稳定排序。
@@ -586,6 +605,47 @@ pub fn settings_config_with_roles(
     model: &str,
     roles: Option<ClaudeRoleModels>,
 ) -> Option<serde_json::Value> {
+    settings_config_with_roles_and_models(
+        app_type,
+        api_key,
+        display_name,
+        base_url,
+        model,
+        roles,
+        None,
+    )
+}
+
+/// Build a provider configuration and, for Codex, persist the fetched model
+/// catalog that powers both the Codex picker and LoongPort's model chips.
+pub fn settings_config_with_models(
+    app_type: &AppType,
+    api_key: &str,
+    display_name: &str,
+    base_url: &str,
+    model: &str,
+    models: Option<&[String]>,
+) -> Option<serde_json::Value> {
+    settings_config_with_roles_and_models(
+        app_type,
+        api_key,
+        display_name,
+        base_url,
+        model,
+        None,
+        models,
+    )
+}
+
+fn settings_config_with_roles_and_models(
+    app_type: &AppType,
+    api_key: &str,
+    display_name: &str,
+    base_url: &str,
+    model: &str,
+    roles: Option<ClaudeRoleModels>,
+    models: Option<&[String]>,
+) -> Option<serde_json::Value> {
     // codex 例外：上游那份多一行 requires_openai_auth，见上面那段。
     //
     // ⚠️ **生图栏必须与 codex 走同一条**（测试 `the_image_column_shares_the_codex_config_shape`
@@ -593,10 +653,32 @@ pub fn settings_config_with_roles(
     // 得到一份 claude/gemini 形状的配置 ⇒ 生图在运行时读不出密钥，而那是只有真机
     // 才发现得了的失败。
     if matches!(app_type, AppType::Codex | AppType::CodexImage) {
-        return Some(serde_json::json!({
+        let mut settings = serde_json::json!({
             "auth": { "OPENAI_API_KEY": api_key },
             "config": codex_config_toml(display_name, base_url, model),
-        }));
+        });
+        if matches!(app_type, AppType::Codex) {
+            if let Some(models) = models.filter(|models| !models.is_empty()) {
+                // Mixed groups can advertise `gpt-image-*` alongside chat
+                // models. Those belong to the image-generation path and are
+                // not valid Codex conversation models, so do not turn them
+                // into clickable main-model choices.
+                let models = models
+                    .iter()
+                    .filter(|model| !is_image_model(model))
+                    .collect::<Vec<_>>();
+                if models.is_empty() {
+                    return Some(settings);
+                }
+                settings["modelCatalog"] = serde_json::json!({
+                    "models": models
+                        .iter()
+                        .map(|model| serde_json::json!({ "model": model }))
+                        .collect::<Vec<_>>(),
+                });
+            }
+        }
+        return Some(settings);
     }
 
     // 其余交给上游 —— 构造一个等价于「导入到 cc-switch」那个 deeplink 的请求。
@@ -1018,34 +1100,72 @@ pub fn is_image_model(model: &str) -> bool {
         .starts_with(IMAGE_MODEL_PREFIX)
 }
 
-/// sk 在各 CLI 的 `settings_config` 里的位置。[`patch_api_key`] 与
-/// [`extract_api_key`] 共用这一处定义 —— 两处各写一遍迟早分叉（一处改了另一处没改 ⇒
-/// 写进去的和读出来的不是同一个字段）。
+/// sk 在各 CLI 的 `settings_config` 里的字段路径。[`patch_api_key`]、
+/// [`extract_api_key`] 与 [`ensure_api_key`] 共用这一处定义，避免读写逻辑各自维护一份。
+///
+/// 一个 CLI 可能有多个兼容字段（例如 Claude 的 token / api key）；它们都存在时会
+/// 一起更新，避免运行时和倍率查询读到不同的凭据。
 ///
 /// 返回 `None` = 这个 CLI 还没接。
-fn api_key_location(app_type: &AppType) -> Option<(&'static str, &'static str)> {
+fn api_key_locations(app_type: &AppType) -> Option<&'static [&'static [&'static str]]> {
+    const CODEX: &[&str] = &["auth", "OPENAI_API_KEY"];
+    const CLAUDE_AUTH_TOKEN: &[&str] = &["env", "ANTHROPIC_AUTH_TOKEN"];
+    const CLAUDE_API_KEY: &[&str] = &["env", "ANTHROPIC_API_KEY"];
+    const GEMINI: &[&str] = &["env", "GEMINI_API_KEY"];
+    const HERMES: &[&str] = &["api_key"];
+    const OPENCLAW: &[&str] = &["apiKey"];
+    const OPENCODE: &[&str] = &["options", "apiKey"];
+
     match app_type {
         // 生图栏与 codex 同形（见 `settings_config_for`），sk 在同一个位置。
-        // 漏了它的后果是**静默的**：`_ => None` 会让 `is_user_edited` 对每条生图档位
+        // 漏了它的后果是**静默的**：缺少路径会让 `is_user_edited` 对每条生图档位
         // 都返回「判不了」，`extract_api_key` 也读不出 sk ⇒ 生图工具起不来。
-        AppType::Codex | AppType::CodexImage => Some(("auth", "OPENAI_API_KEY")),
+        AppType::Codex | AppType::CodexImage => Some(&[CODEX]),
         // ⚠️ **ClaudeDesktop 与 Claude 同形，两个都要在这里**（2026-08-05 补）。
         //
         // 它们走同一个 `deeplink::build_claude_settings`（`provider.rs:165` 的
         // `AppType::Claude | AppType::ClaudeDesktop =>`），sk 都落在
-        // `env.ANTHROPIC_AUTH_TOKEN`。原来只写了 `Claude` ⇒ ClaudeDesktop 掉进
-        // 下面那个 `_ => None`，后果与漏掉生图栏那条完全一样、而且**同样是静默的**：
+        // `env.ANTHROPIC_AUTH_TOKEN`。漏掉 ClaudeDesktop 的后果与漏掉生图栏那条
+        // 完全一样、而且**同样是静默的**：
         // `is_user_edited` 恒为「判不了」⇒ 界面上永远不显示「已手动维护」标记；
         // `extract_api_key` 读不出 sk ⇒ 「恢复默认配置」直接报错。
-        AppType::Claude | AppType::ClaudeDesktop => Some(("env", "ANTHROPIC_AUTH_TOKEN")),
-        AppType::Gemini => Some(("env", "GEMINI_API_KEY")),
-        // ⚠️ hermes / openclaw / opencode **还没接**，见代码仓 `TODO.md`：
-        // 它们的 sk 在**顶层**（hermes 是 `api_key`、openclaw 是 `apiKey`）或
-        // 嵌在别的结构里（opencode 是 `options.apiKey`），而本函数的
-        // `(section, field)` 两段结构表达不了「顶层」。补它要动
-        // `patch_api_key` / `extract_api_key` 的签名与 relay 侧全部调用方。
-        _ => None,
+        AppType::Claude | AppType::ClaudeDesktop => Some(&[CLAUDE_AUTH_TOKEN, CLAUDE_API_KEY]),
+        AppType::Gemini => Some(&[GEMINI]),
+        AppType::Hermes => Some(&[HERMES]),
+        AppType::OpenClaw => Some(&[OPENCLAW]),
+        AppType::OpenCode => Some(&[OPENCODE]),
+        AppType::GrokBuild => None,
     }
+}
+
+fn value_at_path<'a>(root: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
+    path.iter().try_fold(root, |value, key| value.get(*key))
+}
+
+fn object_at_parent_path<'a>(
+    root: &'a mut serde_json::Value,
+    path: &[&str],
+) -> Option<&'a mut serde_json::Map<String, serde_json::Value>> {
+    let (_, parent) = path.split_last()?;
+    let parent = parent
+        .iter()
+        .try_fold(root, |value, key| value.get_mut(*key))?;
+    parent.as_object_mut()
+}
+
+fn ensure_object_at_parent_path<'a>(
+    root: &'a mut serde_json::Value,
+    path: &[&str],
+) -> Option<&'a mut serde_json::Map<String, serde_json::Value>> {
+    let (_, parent) = path.split_last()?;
+    let mut current = root.as_object_mut()?;
+    for key in parent {
+        let value = current
+            .entry((*key).to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        current = value.as_object_mut()?;
+    }
+    Some(current)
 }
 
 /// 从一份 `settings_config` 里读出 sk。
@@ -1054,13 +1174,12 @@ fn api_key_location(app_type: &AppType) -> Option<(&'static str, &'static str)> 
 /// 返回 `None` 表示配置形状里找不到 sk（被改坏了 / 这个 CLI 还没接）——
 /// 调用方应当报错而不是继续，生成一份没有 sk 的配置是条必定 401 的记录。
 pub fn extract_api_key(settings_config: &serde_json::Value, app_type: &AppType) -> Option<String> {
-    let (section, field) = api_key_location(app_type)?;
-    settings_config
-        .get(section)?
-        .get(field)?
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+    api_key_locations(app_type)?.iter().find_map(|path| {
+        value_at_path(settings_config, path)?
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    })
 }
 
 /// 把新 sk 塞进一份**已存在的** `settings_config`，其余部分原样保留。
@@ -1095,18 +1214,57 @@ pub fn patch_api_key(
     app_type: &AppType,
     api_key: &str,
 ) -> bool {
-    let Some((section, field)) = api_key_location(app_type) else {
+    let Some(locations) = api_key_locations(app_type) else {
         return false;
     };
 
-    // 只在那个 section 本来就是对象时改 —— 不存在就说明形状不对，让调用方全量重写，
-    // 别在这里凭空造一个 section（那会拼出一份半新半旧的配置）。
-    let Some(map) = settings_config
-        .get_mut(section)
-        .and_then(serde_json::Value::as_object_mut)
+    // 所有已经存在的候选字段都改成同一把 key。Claude 配置若意外同时含两种字段，
+    // 只改一个会让运行时与倍率查询各读到不同的凭据。
+    let mut patched = false;
+    for path in locations {
+        if let Some(map) = object_at_parent_path(settings_config, path) {
+            let field = *path.last().expect("API key path is not empty");
+            if map.contains_key(field) {
+                map.insert(field.to_string(), serde_json::json!(api_key));
+                patched = true;
+            }
+        }
+    }
+    if patched {
+        return true;
+    }
+
+    // section 存在但 key 被用户删掉时，补回默认字段，避免下一次倍率查询丢凭据。
+    let Some(map) = object_at_parent_path(settings_config, locations[0]) else {
+        return false;
+    };
+    let field = *locations[0].last().expect("API key path is not empty");
+    map.insert(field.to_string(), serde_json::json!(api_key));
+    true
+}
+
+/// 确保手工编辑后的托管档位仍带有由 LoongPort 管理的 sk。
+///
+/// 与 [`patch_api_key`] 的区别是：编辑器可能把整个认证 section 删掉；此时仍应把
+/// 托管凭据补回去，而不是让倍率/连通检测静默失效。若根配置不是对象，返回 `false`
+/// 交给调用方报出明确错误。
+pub fn ensure_api_key(
+    settings_config: &mut serde_json::Value,
+    app_type: &AppType,
+    api_key: &str,
+) -> bool {
+    if patch_api_key(settings_config, app_type, api_key) {
+        return true;
+    }
+
+    let Some(path) = api_key_locations(app_type).and_then(|locations| locations.first().copied())
     else {
         return false;
     };
+    let Some(map) = ensure_object_at_parent_path(settings_config, path) else {
+        return false;
+    };
+    let field = *path.last().expect("API key path is not empty");
     map.insert(field.to_string(), serde_json::json!(api_key));
     true
 }
@@ -1528,6 +1686,7 @@ mod tests {
             key_was_created: false,
             // 排序只看倍率与 group_id，模型名 / 角色模型 / 生图开关都不参与。
             model: DEFAULT_MODEL.into(),
+            models: None,
             roles: None,
             allow_image_generation: false,
         };
@@ -1856,6 +2015,59 @@ mod tests {
     }
 
     #[test]
+    fn codex_settings_persist_the_fetched_model_catalog() {
+        let models = vec![
+            "gpt-a".to_string(),
+            "gpt-b".to_string(),
+            "gpt-image-2".to_string(),
+        ];
+        let settings = settings_config_with_models(
+            &AppType::Codex,
+            "sk-test",
+            "Test",
+            "https://api.example.com/v1",
+            "gpt-a",
+            Some(&models),
+        )
+        .expect("Codex config");
+
+        assert_eq!(
+            settings["modelCatalog"]["models"],
+            serde_json::json!([
+                { "model": "gpt-a" },
+                { "model": "gpt-b" }
+            ])
+        );
+
+        let image_settings = settings_config_with_models(
+            &AppType::CodexImage,
+            "sk-test",
+            "Image",
+            "https://api.example.com/v1",
+            "gpt-image-2",
+            Some(&models),
+        )
+        .expect("Codex image config");
+        assert!(
+            image_settings.get("modelCatalog").is_none(),
+            "生图栏不消费 Codex 主模型目录"
+        );
+    }
+
+    #[test]
+    fn fetched_model_names_are_stable_and_unique() {
+        assert_eq!(
+            normalize_model_names(vec![
+                " gpt-b ".into(),
+                "".into(),
+                "gpt-a".into(),
+                "gpt-b".into(),
+            ]),
+            vec!["gpt-a".to_string(), "gpt-b".to_string()]
+        );
+    }
+
+    #[test]
     fn config_toml_must_not_declare_requires_openai_auth() {
         // 这条是 `codex doctor` 实测出来的，方向与上游预设**相反**，所以特别容易被
         // 「照抄上游模板」改回去。
@@ -2018,6 +2230,41 @@ mod tests {
         assert_eq!(sc["auth"]["用户加的字段"], "保留我");
     }
 
+    #[test]
+    fn claude_api_key_field_is_supported_by_read_and_patch() {
+        let mut sc = serde_json::json!({
+            "env": {
+                "ANTHROPIC_API_KEY": "sk-old",
+                "ANTHROPIC_MODEL": "用户改过的模型"
+            }
+        });
+
+        assert_eq!(
+            extract_api_key(&sc, &AppType::Claude).as_deref(),
+            Some("sk-old")
+        );
+        assert!(patch_api_key(&mut sc, &AppType::Claude, "sk-new"));
+        assert_eq!(sc["env"]["ANTHROPIC_API_KEY"], "sk-new");
+        assert!(sc["env"].get("ANTHROPIC_AUTH_TOKEN").is_none());
+        assert_eq!(sc["env"]["ANTHROPIC_MODEL"], "用户改过的模型");
+
+        sc["env"]["ANTHROPIC_AUTH_TOKEN"] = serde_json::json!("sk-stale");
+        assert!(patch_api_key(&mut sc, &AppType::Claude, "sk-unified"));
+        assert_eq!(sc["env"]["ANTHROPIC_AUTH_TOKEN"], "sk-unified");
+        assert_eq!(sc["env"]["ANTHROPIC_API_KEY"], "sk-unified");
+    }
+
+    #[test]
+    fn ensure_api_key_recreates_a_missing_auth_section() {
+        let mut sc = serde_json::json!({
+            "config": "model = \"用户改过的模型\""
+        });
+
+        assert!(ensure_api_key(&mut sc, &AppType::Codex, "sk-managed"));
+        assert_eq!(sc["auth"]["OPENAI_API_KEY"], "sk-managed");
+        assert_eq!(sc["config"], "model = \"用户改过的模型\"");
+    }
+
     /// Claude Code 的默认配置带 `language: chinese`（维护者要求所有 LoongPort 生成的
     /// Claude Code 配置默认中文）；**Claude Desktop 不带** —— 维护者指定「只在 claudecode」。
     #[test]
@@ -2112,7 +2359,14 @@ mod tests {
     fn extract_api_key_round_trips_for_every_supported_cli() {
         // 「恢复默认」要先把 sk 读出来再塞回去 —— 读写必须认同一个字段。
         // 两处各写一遍字段名迟早分叉，所以它们共用 api_key_location；这条测试守住往返。
-        for app_type in [AppType::Codex, AppType::Claude, AppType::Gemini] {
+        for app_type in [
+            AppType::Codex,
+            AppType::Claude,
+            AppType::Gemini,
+            AppType::Hermes,
+            AppType::OpenClaw,
+            AppType::OpenCode,
+        ] {
             let sc = settings_config_for(&app_type, "sk-abc", "n", "https://x.dev/v1", "m")
                 .unwrap_or_else(|| panic!("{app_type:?} 必须有形状"));
             assert_eq!(
@@ -2129,6 +2383,39 @@ mod tests {
         assert_eq!(extract_api_key(&blank, &AppType::Codex), None);
         blank["auth"] = serde_json::json!({});
         assert_eq!(extract_api_key(&blank, &AppType::Codex), None);
+    }
+
+    #[test]
+    fn patch_api_key_supports_top_level_and_nested_additive_configs() {
+        for app_type in [AppType::Hermes, AppType::OpenClaw, AppType::OpenCode] {
+            let mut settings =
+                settings_config_for(&app_type, "sk-old", "n", "https://x.dev/v1", "m")
+                    .unwrap_or_else(|| panic!("{app_type:?} 必须有形状"));
+
+            assert!(patch_api_key(&mut settings, &app_type, "sk-new"));
+            assert_eq!(
+                extract_api_key(&settings, &app_type).as_deref(),
+                Some("sk-new")
+            );
+        }
+
+        let mut missing_options = serde_json::json!({ "models": {} });
+        assert!(!patch_api_key(
+            &mut missing_options,
+            &AppType::OpenCode,
+            "sk-new"
+        ));
+        assert!(missing_options.get("options").is_none());
+
+        assert!(ensure_api_key(
+            &mut missing_options,
+            &AppType::OpenCode,
+            "sk-new"
+        ));
+        assert_eq!(
+            extract_api_key(&missing_options, &AppType::OpenCode).as_deref(),
+            Some("sk-new")
+        );
     }
 
     #[test]

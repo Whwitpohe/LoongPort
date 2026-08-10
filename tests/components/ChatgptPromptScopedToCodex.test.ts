@@ -55,24 +55,24 @@ describe("ChatGPT 确认框只在 codex 那一屏出现", () => {
     ).not.toMatch(/touchesCodexConfig[^;]*codex-image/);
   });
 
-  it("两条切换路径都用上了这个判据", () => {
-    // 中转站档位（handleSwitchTier）与官网直连（handleVendorUse）各一处 ——
-    // 2026-08-04 那次修的正是「两条路走同一道编排」，这次不能只修一条。
+  it("三条切换路径都用上了这个判据", () => {
+    // 中转站档位（handleSwitchTier）、官网直连（handleVendorUse）和指定模型
+    // （handleSelectTierModel）各一处，不能只修其中一条。
     const guarded = source.match(
       /touchesCodexConfig\s*&&\s*chatgptNeedsAttention\s*&&\s*!isRoutingActive/g,
     );
     expect(
       guarded?.length,
-      "应有两处（中转站档位 + 官网直连账号）都带上 touchesCodexConfig",
-    ).toBe(2);
+      "应有三处（中转站档位 + 官网直连账号 + 指定模型）都带上 touchesCodexConfig",
+    ).toBe(3);
   });
 
-  it("路由接管时两条切换路径都不弹重启确认", () => {
+  it("路由接管时三条切换路径都不弹重启确认", () => {
     expect(source).toContain("isRoutingActive: boolean");
     expect(
       source.match(/!isRoutingActive/g)?.length,
-      "中转站档位与官网直连账号都必须排除路由模式",
-    ).toBe(2);
+      "中转站档位、官网直连账号与指定模型都必须排除路由模式",
+    ).toBe(3);
   });
 
   it("没有残留的裸 chatgptNeedsAttention 判断", () => {

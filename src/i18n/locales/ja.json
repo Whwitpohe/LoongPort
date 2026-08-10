@@ -2773,7 +2773,14 @@
     "timeout": "タイムアウト（秒）",
     "maxRetries": "最大リトライ回数",
     "degradedThreshold": "低速判定しきい値（ミリ秒）",
-    "error": "{{providerName}} のチェックでエラーが発生しました: {{error}}"
+    "error": "{{providerName}} のチェックでエラーが発生しました: {{error}}",
+    "modelProbe": {
+      "keyExpired": "API キーが失効しています（{{status}}）",
+      "forbidden": "このティアはモデル一覧にアクセスできません（{{status}}）",
+      "noModels": "このティアに呼び出し可能なモデルはありません",
+      "imageOnly": "画像生成のみ（{{models}}）。チャットは利用できません",
+      "models": "{{total}} 個のモデル（{{models}}）"
+    }
   },
   "proxyConfig": {
     "proxyEnabled": "ルーティング総スイッチ",
@@ -3105,6 +3112,9 @@
       "currentConfig": "現在の設定",
       "actualRate": "実質 {{value}} 倍",
       "actualRateHint": "実質倍率 = 現在の請求倍率 ÷ チャージ反映倍率（手数料を含まない）",
+      "models": "対応モデル",
+      "selectModel": "モデル {{model}} に切り替え",
+      "modelSelected": "現在のモデル",
       "switching": "切り替え中…",
       "checkConnectivity": "接続を確認",
       "resetConfig": "デフォルト設定に戻す",
@@ -3148,6 +3158,7 @@
       "readyWithKeys": "{{count}} 件のプランを準備し、{{keys}} 個のキーを作成しました",
       "landedOnOtherPlatforms": "このアカウントには {{count}} 件のグループがありますが、現在の CLI 向けのものはありません。上部の該当タブに切り替えてご確認ください。",
       "groupFailed": "{{group}}：{{reason}}",
+      "mergedProviders": "cc-switch の重複プロバイダー {{count}} 件を取り込みました",
       "refreshed": "{{relays}} 件の中継サイトを更新し、合計 {{tiers}} 件のプランを取得しました",
       "refreshFailedWithReason": "{{name}} の更新に失敗しました：{{reason}}",
       "refreshedWithKeys": "{{relays}} 件の中継サイトを更新しました（枠 {{tiers}} 件、新規キー {{keys}} 本）"
@@ -3155,7 +3166,10 @@
     "switch": {
       "done": "{{name}} に切り替えました",
       "doneRelaunched": "{{name}} に切り替え、ChatGPT を再起動しました",
-      "doneNeedsRestart": "{{name}} に切り替えました。ChatGPT を手動で再起動してください"
+      "doneNeedsRestart": "{{name}} に切り替えました。ChatGPT を手動で再起動してください",
+      "modelDone": "{{name}} のモデルを {{model}} に切り替えました",
+      "modelDoneRelaunched": "{{name}} のモデルを {{model}} に切り替え、ChatGPT を再起動しました",
+      "modelDoneNeedsRestart": "{{name}} のモデルを {{model}} に切り替えました。ChatGPT を手動で再起動してください"
     },
     "official": {
       "button": "公式ログインに戻す",
@@ -3210,6 +3224,90 @@
       "howTo": "画像生成のティアを切り替えても CLI の再起動は不要で、次回の生成から新しいティアが使われます。初めて画像ティアを持ったときだけ、codex にツールを認識させるため新しいターミナルを開いてください。",
       "emptyTitle": "画像生成のティアはまだありません",
       "emptyBody": "画像ティアは「キーを取得」時に自動判定されます。gpt-image 系モデルだけを持つグループがあれば、ここに現れます。ご利用のサイトに画像グループが無い場合もあります —— そのときはこのページは空のままで、CLI の設定には何も追加されません。"
+    },
+    "modelVerification": {
+      "title": "モデルを検証",
+      "titleWithTier": "モデルを検証 · {{tierName}}",
+      "description": "このプロバイダーに設定されたモデルを 1 つ検証します。",
+      "globalScopeNote": "設定済みのすべてのモデルに自動検証を適用します。",
+      "model": {
+        "label": "モデルを選択",
+        "placeholder": "モデルを選択してください",
+        "loading": "モデルを読み込み中…",
+        "empty": "検証できるモデルはありません",
+        "error": "モデル一覧を読み込めませんでした"
+      },
+      "actions": {
+        "start": "検証を開始",
+        "stop": "検証を停止",
+        "retry": "再試行"
+      },
+      "status": { "running": "検証中 {{completed}} / {{total}}" },
+      "runtime": {
+        "autoLabel": "実行時の自動検証（グローバル）",
+        "autoHelp": "すべてのリレーグループとモデルに適用されます。LoongPort はローカルプロキシ経由で Codex と Claude の実際の応答を監視します。追加の検証リクエストは送信せず、会話内容も保存しません。",
+        "loadError": "実行時検証の状態を読み込めませんでした。",
+        "anomalyToast": "{{app}} のモデル {{model}} で異常を検出しました。モデル検証を開いて確認してください。",
+        "apps": { "codex": "Codex", "claude": "Claude" },
+        "status": { "active": "有効", "waiting": "待機中", "error": "エラー" }
+      },
+      "history": {
+        "title": "直近 5 件の検証結果",
+        "loading": "検証結果を読み込んでいます…",
+        "empty": "検証結果はまだありません。",
+        "error": "検証結果を読み込めませんでした。",
+        "source": { "active": "手動検証", "runtime": "使用時の検証" }
+      },
+      "tierVerdict": {
+        "trusted": "モデル検証済み",
+        "suspicious": "モデルに疑い",
+        "anomaly": "モデル異常",
+        "trustedHint": "モデル検証に合格しました。モデルを検証で詳細を確認してください。",
+        "suspiciousHint": "検証で疑わしい挙動が見つかりました。モデルを検証で詳細を確認してください。",
+        "anomalyHint": "検証で異常が見つかりました。モデルを検証で詳細を確認してください。"
+      },
+      "verdict": {
+        "trusted": "信頼済み",
+        "suspicious": "疑わしい",
+        "anomaly": "異常",
+        "inconclusive": "判断不能"
+      },
+      "evidence": {
+        "title": "検証根拠",
+        "level": {
+          "cryptographic": "暗号学的根拠",
+          "protocolBehavior": "プロトコル動作の根拠",
+          "insufficient": "根拠不足"
+        },
+        "outcome": {
+          "passed": "合格",
+          "failed": "不合格",
+          "skipped": "スキップ"
+        },
+        "fact": {
+          "basicEnvelope": "基本応答構造",
+          "modelMatch": "モデル識別",
+          "streamLifecycle": "ストリーミングのライフサイクル",
+          "usageConsistency": "使用量の一貫性",
+          "toolCallShape": "ツール呼び出しの構造",
+          "structuredOutput": "構造化出力",
+          "thinkingSignature": "推論シグネチャ",
+          "signatureContinuation": "シグネチャの継続",
+          "foreignProtocol": "外部プロトコル",
+          "foreignSelfIdentification": "外部自己識別"
+        }
+      },
+      "failure": {
+        "authentication": "認証に失敗しました",
+        "rateLimited": "プロバイダーにより検証が制限されました",
+        "insufficientBalance": "残高不足のためこのモデルを検証できません",
+        "network": "ネットワーク接続に失敗しました",
+        "upstream": "プロバイダーは検証を完了できませんでした",
+        "timeout": "検証がタイムアウトしました",
+        "modelUnavailable": "このモデルは利用できません",
+        "cancelled": "検証を停止しました",
+        "invalidResponse": "プロバイダーが無効な応答を返しました"
+      }
     }
   }
 }

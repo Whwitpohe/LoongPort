@@ -26,6 +26,7 @@ import type {
   RelayRow as RelayRowData,
   TierInfo,
 } from "@/lib/api/relay";
+import type { VerificationVerdict } from "@/lib/api/modelVerification";
 
 import { RelayRow } from "./RelayRow";
 import { parseRowKey, type RowKey, rowKey } from "./rowKey";
@@ -83,6 +84,7 @@ export interface RelayTierListProps {
   channelMonitors: Readonly<Record<number, ChannelMonitorInfo[] | undefined>>;
   /** 保留配置槽位与手工参数，只修改分组绑定。 */
   onRebindTier: (relayId: number, tier: TierInfo, groupId: number) => void;
+  onSelectTierModel: (tier: TierInfo, model: string) => void;
   /** 拖动结束后的新顺序（完整 id 序列，下标即 sort_index）。 */
   onReorder: (relayIds: number[]) => void;
   /**
@@ -103,6 +105,12 @@ export interface RelayTierListProps {
   onCheckTier: (tier: TierInfo) => void;
   /** 某个档位是不是正在检测中。 */
   isCheckingTier: (providerId: string) => boolean;
+  /** 档位行的模型验证呈现输入；结果和运行状态仍由 RelaySection 持有。 */
+  verificationVerdictForTier: (
+    tier: TierInfo,
+  ) => VerificationVerdict | undefined;
+  onVerifyTier?: (tier: TierInfo) => void;
+  isVerifyingTier: (providerId: string) => boolean;
   /**
    * 把某个档位的配置恢复成默认值（改坏之后的回头路）。
    *
@@ -181,11 +189,15 @@ export function RelayTierList({
   availableGroups,
   channelMonitors,
   onRebindTier,
+  onSelectTierModel,
   onReorder,
   balances,
   onPurchase,
   onCheckTier,
   isCheckingTier,
+  verificationVerdictForTier,
+  onVerifyTier,
+  isVerifyingTier,
   onResetTier,
   onEditTier,
   onRemoveRelay,
@@ -332,12 +344,16 @@ export function RelayTierList({
                   onRebindTier={(tier, groupId) =>
                     onRebindTier(op.id, tier, groupId)
                   }
+                  onSelectTierModel={onSelectTierModel}
                   // `?? null` 而不是 `?? undefined`：缺键与「拉失败」在 UI 上是
                   // 同一件事（都不显示余额），统一成 null 让行组件只判一种。
                   balance={balances[rowKey("relay", op.id)] ?? null}
                   onPurchase={() => onPurchase(op.id)}
                   onCheckTier={onCheckTier}
                   isCheckingTier={isCheckingTier}
+                  verificationVerdictForTier={verificationVerdictForTier}
+                  onVerifyTier={onVerifyTier}
+                  isVerifyingTier={isVerifyingTier}
                   onResetTier={onResetTier}
                   onEditTier={onEditTier}
                   onDelete={() => onRemoveRelay(op.id)}

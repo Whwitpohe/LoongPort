@@ -2773,7 +2773,14 @@
     "timeout": "超时时间（秒）",
     "maxRetries": "最大重试次数",
     "degradedThreshold": "较慢阈值（毫秒）",
-    "error": "{{providerName}} 检查出错: {{error}}"
+    "error": "{{providerName}} 检查出错: {{error}}",
+    "modelProbe": {
+      "keyExpired": "密钥已失效（{{status}}）",
+      "forbidden": "这个档位无权访问（{{status}}）",
+      "noModels": "这个档位没有可调用的模型",
+      "imageOnly": "只能生图（{{models}}），不能对话",
+      "models": "{{total}} 个模型（{{models}}）"
+    }
   },
   "proxyConfig": {
     "proxyEnabled": "路由总开关",
@@ -3105,6 +3112,9 @@
       "currentConfig": "当前配置",
       "actualRate": "实际 {{value}} 倍",
       "actualRateHint": "实际倍率 = 当前扣费倍率 ÷ 充值到账比例（不含手续费）",
+      "models": "支持的模型",
+      "selectModel": "切换到模型 {{model}}",
+      "modelSelected": "当前模型",
       "switching": "切换中…",
       "checkConnectivity": "检测连通",
       "resetConfig": "恢复默认配置",
@@ -3148,6 +3158,7 @@
       "readyWithKeys": "已备好 {{count}} 个档位，新建 {{keys}} 把密钥",
       "landedOnOtherPlatforms": "这个账号有 {{count}} 个分组，但都不属于当前这个 CLI。切到上方对应的标签页查看。",
       "groupFailed": "{{group}}：{{reason}}",
+      "mergedProviders": "已从 cc-switch 收编 {{count}} 个重复配置",
       "refreshed": "已刷新 {{relays}} 个中转站，共 {{tiers}} 个档位",
       "refreshFailedWithReason": "{{name}} 刷新失败：{{reason}}",
       "refreshedWithKeys": "已刷新 {{relays}} 个中转站，共 {{tiers}} 个档位，新建 {{keys}} 把密钥"
@@ -3155,7 +3166,10 @@
     "switch": {
       "done": "已切换到 {{name}}",
       "doneRelaunched": "已切换到 {{name}}，已重新打开 ChatGPT",
-      "doneNeedsRestart": "已切换到 {{name}}，请手动重启 ChatGPT"
+      "doneNeedsRestart": "已切换到 {{name}}，请手动重启 ChatGPT",
+      "modelDone": "已切换到 {{name}} 的模型 {{model}}",
+      "modelDoneRelaunched": "已切换到 {{name}} 的模型 {{model}}，已重新打开 ChatGPT",
+      "modelDoneNeedsRestart": "已切换到 {{name}} 的模型 {{model}}，请手动重启 ChatGPT"
     },
     "official": {
       "button": "切回官方登录",
@@ -3210,6 +3224,86 @@
       "howTo": "换生图档位不用重启 CLI，下一次生成就用新的。只有第一次有生图档位时要新开一个终端，让 codex 读到那个工具。",
       "emptyTitle": "还没有生图档位",
       "emptyBody": "生图档位由「获取密钥」自动识别：中转站那边有只挂 gpt-image 模型的分组时，它就出现在这里。你的站点可能没有提供生图分组 —— 那样这一页保持空着就好，CLI 的配置里不会多出任何东西。"
+    },
+    "modelVerification": {
+      "title": "模型验证",
+      "titleWithTier": "验证模型 · {{tierName}}",
+      "description": "验证这个供应商已配置的一个模型。",
+      "globalScopeNote": "对所有已配置模型启用自动验证。",
+      "model": {
+        "label": "选择模型",
+        "placeholder": "请选择模型",
+        "loading": "正在加载模型…",
+        "empty": "没有可验证的模型",
+        "error": "模型列表加载失败"
+      },
+      "actions": { "start": "开始验证", "stop": "停止验证", "retry": "重试" },
+      "status": { "running": "正在验证 {{completed}} / {{total}}" },
+      "runtime": {
+        "autoLabel": "运行时自动检测（全局）",
+        "autoHelp": "对所有中转分组和模型生效。开启后，LoongPort 会通过本地代理观察 Codex 和 Claude 的实际响应；不会额外发送检测请求，也不会保存对话内容。",
+        "loadError": "运行时检测状态加载失败",
+        "anomalyToast": "{{app}} 的模型 {{model}} 检测到异常，请打开模型验证查看。",
+        "apps": { "codex": "Codex", "claude": "Claude" },
+        "status": { "active": "已启用", "waiting": "等待中", "error": "异常" }
+      },
+      "history": {
+        "title": "最近 5 条验证记录",
+        "loading": "正在加载验证记录…",
+        "empty": "暂无验证记录",
+        "error": "验证记录加载失败",
+        "source": { "active": "主动检测", "runtime": "使用时检测" }
+      },
+      "tierVerdict": {
+        "trusted": "模型已验证",
+        "suspicious": "模型存疑",
+        "anomaly": "模型异常",
+        "trustedHint": "模型验证通过，请点击「模型验证」查看详情",
+        "suspiciousHint": "模型验证结果存疑，请点击「模型验证」查看详情",
+        "anomalyHint": "模型验证发现异常，请点击「模型验证」查看详情"
+      },
+      "verdict": {
+        "trusted": "可信",
+        "suspicious": "可疑",
+        "anomaly": "异常",
+        "inconclusive": "结论不足"
+      },
+      "evidence": {
+        "title": "验证依据",
+        "level": {
+          "cryptographic": "密码学依据",
+          "protocolBehavior": "协议行为依据",
+          "insufficient": "依据不足"
+        },
+        "outcome": {
+          "passed": "通过",
+          "failed": "未通过",
+          "skipped": "已跳过"
+        },
+        "fact": {
+          "basicEnvelope": "基础响应结构",
+          "modelMatch": "模型身份",
+          "streamLifecycle": "流式响应生命周期",
+          "usageConsistency": "用量一致性",
+          "toolCallShape": "工具调用结构",
+          "structuredOutput": "结构化输出",
+          "thinkingSignature": "推理特征",
+          "signatureContinuation": "特征延续",
+          "foreignProtocol": "外部协议",
+          "foreignSelfIdentification": "外部自我标识"
+        }
+      },
+      "failure": {
+        "authentication": "认证失败",
+        "rateLimited": "供应商限制了本次验证",
+        "insufficientBalance": "余额不足，无法验证此模型",
+        "network": "网络连接失败",
+        "upstream": "供应商无法完成验证",
+        "timeout": "验证超时",
+        "modelUnavailable": "此模型不可用",
+        "cancelled": "验证已停止",
+        "invalidResponse": "供应商返回了无效响应"
+      }
     }
   }
 }
