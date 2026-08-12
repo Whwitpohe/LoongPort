@@ -23,8 +23,7 @@
 //! 已经为此让过路的两处（别推翻）：
 //! - `creds` 的登录标识叫 `login_identifier` 而非 `account_email` ——
 //!   new-api 用 username 登录，sub2api 用 email，中立命名两边都装得下
-//! - [`probe_site`] 是「这是不是一个 sub2api 站」的**指纹**，不是通用探测 ——
-//!   接 new-api 要加它自己的指纹，然后按结果分派
+//! - [`PROBE_ADAPTER`] 拥有 sub2api 指纹；通用候选遍历与收敛在 `relay::discovery`
 //!
 //! ## 四条会静默出错的约定
 //!
@@ -42,7 +41,35 @@ use serde::{Deserialize, Serialize};
 
 use crate::app_config::AppType;
 use crate::error::AppError;
+use crate::relay::backend::{BackendKind, DetectedSite, ProbeAdapter, ProbeCandidate};
 use crate::relay::platform_map::{parse_platform, Platform};
+
+pub const PROBE_ADAPTER: ProbeAdapter = ProbeAdapter {
+    candidate: ProbeCandidate {
+        id: "sub2api",
+        path: "/api/v1/settings/public",
+        bearer_token_storage_key: Some("auth_token"),
+        detector_json_paths: &[
+            "code",
+            "data.site_name",
+            "data.version",
+            "data.api_base_url",
+            "data.registration_enabled",
+            "data.promo_code_enabled",
+            "data.invitation_code_enabled",
+        ],
+    },
+    detect: detect_site,
+};
+
+fn detect_site(body: &str) -> Option<DetectedSite> {
+    let settings = parse_sub2api_public_settings(body).ok()?;
+    Some(DetectedSite {
+        backend_kind: BackendKind::Sub2Api,
+        site_name: settings.site_name,
+        api_base_url: settings.api_base_url,
+    })
+}
 
 /// sub2api 业务响应信封。
 ///
@@ -101,7 +128,7 @@ pub struct PublicSettings {
     /// 站点展示名。V2 用它当中转站名字。
     #[serde(default)]
     pub site_name: String,
-    /// 服务端注入的版本号（非 DB 设置项），存在即说明是 sub2api。
+    /// 服务端注入的版本号；协议识别还需由严格 parser 校验整组指纹字段。
     #[serde(default)]
     pub version: String,
     /// 后台配置的 API 基址。**可能是空串**，不可盲信，见 [`normalize_api_base`]。
@@ -120,6 +147,54 @@ pub struct PublicSettings {
     ///   （它是个兄弟 slot）。所以那一页仍然走得通 —— 我们那条横幅也照样能显示。
     #[serde(default)]
     pub registration_enabled: bool,
+    /// 是否开放在线支付。关闭时 `/purchase` 会被站点路由守卫重定向到 dashboard，
+    /// 充值入口应改走兑换码页 `/redeem`。
+    ///
+    /// `None` = 老版本 sub2api 没有这个公开字段；为兼容旧站，调用方继续按开启处理。
+    #[serde(default)]
+    pub payment_enabled: Option<bool>,
+}
+
+/// sub2api 公共设置端点的严格 wire shape。
+///
+/// 协议识别不能只看 `version`：兼容站、验证页包装器乃至其它面板都可能带同名字段。
+/// 这里要求 sub2api 当前稳定公开的整组字段及类型同时匹配，再转换成上层真正消费的窄 DTO。
+#[derive(Debug, Deserialize)]
+struct Sub2ApiPublicSettingsWire {
+    site_name: String,
+    version: String,
+    api_base_url: String,
+    registration_enabled: bool,
+    #[serde(default)]
+    payment_enabled: Option<bool>,
+    promo_code_enabled: bool,
+    invitation_code_enabled: bool,
+}
+
+/// 严格解析 sub2api 的 `GET /api/v1/settings/public` 响应。
+///
+/// 原生 HTTP 探针与浏览器辅助探针必须共用这一处判据，避免两条路径对同一站点得出不同结论。
+pub fn parse_sub2api_public_settings(body: &str) -> Result<PublicSettings, AppError> {
+    let env: Envelope<Sub2ApiPublicSettingsWire> = serde_json::from_str(body)
+        .map_err(|e| AppError::Config(format!("响应不是 sub2api 公共设置格式: {e}")))?;
+    let wire = env.into_data("探测站点")?;
+
+    if wire.version.trim().is_empty() {
+        return Err(AppError::Config(
+            "响应不是 sub2api 公共设置格式: version 为空".into(),
+        ));
+    }
+
+    // 这两个布尔值目前不参与业务逻辑，但要求它们存在且类型正确是协议指纹的一部分。
+    let _ = (wire.promo_code_enabled, wire.invitation_code_enabled);
+
+    Ok(PublicSettings {
+        site_name: wire.site_name,
+        version: wire.version,
+        api_base_url: wire.api_base_url,
+        registration_enabled: wire.registration_enabled,
+        payment_enabled: wire.payment_enabled,
+    })
 }
 
 /// 分组（`GET /api/v1/groups/available`）的窄子集。
@@ -518,38 +593,6 @@ pub fn base_url_for(app_type: &AppType, site_origin: &str, api_base_url: &str) -
     }
 }
 
-/// 未鉴权探测：这个域名是不是一个 sub2api 站。
-///
-/// `GET /api/v1/settings/public` 只挂公开 IP 限流，无 JWT、无 backend-mode 守卫，所以
-/// 探测不需要任何凭据。
-pub async fn probe_site(site_origin: &str) -> Result<PublicSettings, AppError> {
-    let url = format!("{site_origin}/api/v1/settings/public");
-    let client = build_client()?;
-    let resp = client.get(&url).send().await.map_err(|e| {
-        AppError::Config(format!("连不上 {site_origin}: {}", describe_send_error(&e)))
-    })?;
-
-    if !resp.status().is_success() {
-        return Err(AppError::Config(format!(
-            "{site_origin} 返回 HTTP {}，可能不是 sub2api 站点",
-            resp.status().as_u16()
-        )));
-    }
-    let env: Envelope<PublicSettings> = resp
-        .json()
-        .await
-        .map_err(|e| AppError::Config(format!("{site_origin} 的响应不是 sub2api 格式: {e}")))?;
-    let settings = env.into_data("探测站点")?;
-
-    // 指纹：version 由服务端注入，任何 sub2api 都有；site_name 可能被中转站留空，不作硬判据。
-    if settings.version.is_empty() {
-        return Err(AppError::Config(format!(
-            "{site_origin} 看起来不是 sub2api 站点（响应缺 version）"
-        )));
-    }
-    Ok(settings)
-}
-
 /// 带 Bearer token 的 sub2api 客户端。
 ///
 /// **User-Agent 必须与登录 WebView 一致**：sub2api 有可选的会话绑定
@@ -645,6 +688,34 @@ impl Client {
         let env: Envelope<T> = serde_json::from_str(&body)
             .map_err(|e| AppError::Config(format!("{what}失败: 响应解析出错 {e}")))?;
         env.into_data(what)
+    }
+
+    /// 拉站点公开设置。
+    ///
+    /// 这是站点能力的权威来源；充值页选择读取 `payment_enabled`，不按域名猜。
+    /// 端点公开可读，故有意不附带账号 token。
+    pub async fn public_settings(&self) -> Result<PublicSettings, AppError> {
+        let resp = self
+            .http
+            .get(self.url("/settings/public"))
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::Config(format!("获取站点公开设置失败: {}", describe_send_error(&e)))
+            })?;
+        let status = resp.status();
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::Config(format!("获取站点公开设置失败: 读响应出错 {e}")))?;
+        if !status.is_success() {
+            return Err(AppError::Config(format!(
+                "获取站点公开设置失败: HTTP {} {}",
+                status.as_u16(),
+                first_line(&body)
+            )));
+        }
+        parse_sub2api_public_settings(&body)
     }
 
     /// 拉可用分组。**返回平数组，不是分页信封。**
@@ -911,11 +982,9 @@ pub async fn list_models(
         return Ok(None);
     }
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
         return Err(AppError::Config(format!(
-            "获取模型列表失败: HTTP {} {}",
-            status.as_u16(),
-            first_line(&body)
+            "获取模型列表失败: HTTP {}",
+            status.as_u16()
         )));
     }
 
@@ -1136,7 +1205,7 @@ fn describe_send_error(e: &reqwest::Error) -> String {
     out
 }
 
-fn build_client() -> Result<reqwest::Client, AppError> {
+pub(crate) fn build_client() -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .user_agent(crate::relay::login::WEBVIEW_USER_AGENT)
@@ -1334,7 +1403,18 @@ mod tests {
         let origin = normalize_site_origin("bestapi.store").expect("归一化域名");
         assert_eq!(origin, "https://bestapi.store");
 
-        let settings = rt.block_on(probe_site(&origin)).expect("探测应成功");
+        let body = rt.block_on(async {
+            build_client()
+                .expect("建 client")
+                .get(format!("{origin}/api/v1/settings/public"))
+                .send()
+                .await
+                .expect("请求公开设置")
+                .text()
+                .await
+                .expect("读取公开设置")
+        });
+        let settings = parse_sub2api_public_settings(&body).expect("探测应成功");
 
         // version 是我们的站点指纹判据 —— 它没了，探测就认不出 sub2api。
         assert!(!settings.version.is_empty(), "指纹字段 version 必须有值");
@@ -1548,6 +1628,98 @@ mod tests {
         assert!(env.into_data("测试").is_err());
     }
 
+    #[tokio::test]
+    async fn public_settings_reads_payment_capability_without_sending_credentials() {
+        async fn settings(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Value> {
+            assert!(
+                headers.get(axum::http::header::AUTHORIZATION).is_none(),
+                "公开设置端点不需要账号 token"
+            );
+            axum::Json(serde_json::json!({
+                "code": 0,
+                "message": "success",
+                "data": {
+                    "site_name": "WawAPI",
+                    "version": "1.0.0",
+                    "api_base_url": "",
+                    "registration_enabled": true,
+                    "payment_enabled": false,
+                    "promo_code_enabled": false,
+                    "invitation_code_enabled": true
+                }
+            }))
+        }
+
+        let app =
+            axum::Router::new().route("/api/v1/settings/public", axum::routing::get(settings));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind settings server");
+        let origin = format!("http://{}", listener.local_addr().expect("server addr"));
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve settings response");
+        });
+
+        let client = Client::new(origin, "account-secret", Some(7)).expect("build client");
+        let settings = client
+            .public_settings()
+            .await
+            .expect("read public settings");
+
+        assert_eq!(settings.site_name, "WawAPI");
+        assert_eq!(settings.payment_enabled, Some(false));
+    }
+
+    #[test]
+    fn sub2api_public_settings_parser_accepts_a_strict_protocol_match() {
+        let body = r#"{"code":0,"message":"success","data":{
+            "site_name":"贾维斯","version":"0.1.169","api_base_url":"",
+            "registration_enabled":true,"payment_enabled":false,
+            "promo_code_enabled":true,"invitation_code_enabled":true}}"#;
+
+        let settings = parse_sub2api_public_settings(body).expect("完整 sub2api 契约应通过");
+        assert_eq!(settings.site_name, "贾维斯");
+        assert_eq!(settings.version, "0.1.169");
+        assert_eq!(settings.payment_enabled, Some(false));
+    }
+
+    #[test]
+    fn sub2api_public_settings_parser_rejects_browser_verification_html() {
+        let err = parse_sub2api_public_settings(
+            "<!doctype html><title>Just a moment...</title><p>Verify you are human</p>",
+        )
+        .expect_err("验证页不是 sub2api 协议响应");
+        assert!(err.to_string().contains("sub2api"));
+    }
+
+    #[test]
+    fn sub2api_public_settings_parser_rejects_new_api_status_shape() {
+        let body = r#"{"success":true,"message":"","data":{
+            "version":"0.9.0","system_name":"New API","register_enabled":true}}"#;
+        assert!(parse_sub2api_public_settings(body).is_err());
+    }
+
+    #[test]
+    fn sub2api_public_settings_parser_rejects_version_only_lookalike() {
+        let body = r#"{"code":0,"message":"success","data":{
+            "site_name":"lookalike","version":"1.0.0","api_base_url":"",
+            "registration_enabled":true}}"#;
+        assert!(parse_sub2api_public_settings(body).is_err());
+    }
+
+    #[test]
+    fn sub2api_public_settings_parser_rejects_wrong_envelope_contract() {
+        for body in [
+            r#"{"code":1,"message":"no","data":{}}"#,
+            r#"{"code":"success","message":"","data":{}}"#,
+            r#"{"code":0,"message":"success","data":null}"#,
+        ] {
+            assert!(parse_sub2api_public_settings(body).is_err(), "body={body}");
+        }
+    }
+
     #[test]
     fn envelope_parses_the_real_wire_format_byte_for_byte() {
         // 这条钉住一个**已经踩过**的坑：`code` 是整数、成功是 0，而 `message` 才是 "success"。
@@ -1558,11 +1730,15 @@ mod tests {
         // 下面这段是 `curl https://bestapi.store/api/v1/settings/public` 的真实形状（截取字段）。
         let real = r#"{"code":0,"message":"success","data":{
             "site_name":"百适 BestApi","version":"0.1.169",
-            "api_base_url":"","registration_enabled":true}}"#;
-        let env: Envelope<PublicSettings> = serde_json::from_str(real).expect("必须能解真实响应");
-        let s = env.into_data("探测").expect("code=0 应判为成功");
+            "api_base_url":"","registration_enabled":true,
+            "promo_code_enabled":true,"invitation_code_enabled":true}}"#;
+        let s = parse_sub2api_public_settings(real).expect("必须能解真实响应");
         assert_eq!(s.version, "0.1.169");
         assert_eq!(s.api_base_url, "", "实测这个字段就是空串");
+        assert_eq!(
+            s.payment_enabled, None,
+            "老版本响应缺字段时必须保持未知，而不是误判为关闭支付"
+        );
 
         // 反面：把 message 的 "success" 误当 code 会解不出来 —— 这正是原来的写法。
         assert!(
@@ -1778,6 +1954,53 @@ mod tests {
         };
         assert!(mk("active").is_usable());
         assert!(!mk("disabled").is_usable());
+    }
+
+    #[tokio::test]
+    async fn list_models_does_not_expose_authenticated_response_bodies() {
+        const API_KEY: &str = "sk-model-list-secret";
+        const RESPONSE_MARKER: &str = "upstream-echoed-private-payload";
+
+        async fn leaking_error(
+            headers: axum::http::HeaderMap,
+        ) -> (axum::http::StatusCode, &'static str) {
+            assert_eq!(
+                headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok()),
+                Some("Bearer sk-model-list-secret")
+            );
+            (
+                axum::http::StatusCode::BAD_GATEWAY,
+                "upstream-echoed-private-payload sk-model-list-secret",
+            )
+        }
+
+        let app = axum::Router::new().route("/v1/models", axum::routing::get(leaking_error));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind model-list server");
+        let origin = format!("http://{}", listener.local_addr().expect("server addr"));
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve model-list response");
+        });
+
+        let error = list_models(&origin, API_KEY)
+            .await
+            .expect_err("502 model list must fail")
+            .to_string();
+
+        assert!(
+            error.contains("HTTP 502"),
+            "status remains diagnostic: {error}"
+        );
+        assert!(!error.contains(API_KEY), "error leaked API key: {error}");
+        assert!(
+            !error.contains(RESPONSE_MARKER),
+            "error leaked authenticated response body: {error}"
+        );
     }
 
     /// **传输错误必须带上 `source()` 链**。

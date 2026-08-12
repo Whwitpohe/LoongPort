@@ -14,6 +14,7 @@ use serde_json::Value;
 
 use crate::app_config::AppType;
 use crate::database::{validate_cost_multiplier, validate_pricing_source};
+use crate::diagnostics::{DiagnosticEvent, ResultLogExt};
 use crate::error::AppError;
 use crate::provider::{Provider, UsageResult};
 use crate::services::mcp::McpService;
@@ -3088,7 +3089,11 @@ impl ProviderService {
                     .db
                     .set_omo_provider_current(app_type.as_str(), id, enable.category)?;
                 crate::services::OmoService::write_config_to_file(state, enable)?;
-                let _ = crate::services::OmoService::delete_config_file(disable);
+                crate::services::OmoService::delete_config_file(disable).error_on_err(
+                    DiagnosticEvent::new("provider.switch.omo", "stale_config_delete_failed")
+                        .field("enabled_variant", enable.category)
+                        .field("disabled_variant", disable.category),
+                );
                 return Ok(SwitchResult::default());
             }
         }
@@ -4650,15 +4655,27 @@ impl ProviderService {
         if let Some(p) = provider {
             if p.apps.claude {
                 let claude_id = format!("universal-claude-{id}");
-                let _ = state.db.delete_provider("claude", &claude_id);
+                state.db.delete_provider("claude", &claude_id).error_on_err(
+                    DiagnosticEvent::new("provider.universal.delete", "child_delete_failed")
+                        .field("app", "claude")
+                        .field("provider_id", claude_id),
+                );
             }
             if p.apps.codex {
                 let codex_id = format!("universal-codex-{id}");
-                let _ = state.db.delete_provider("codex", &codex_id);
+                state.db.delete_provider("codex", &codex_id).error_on_err(
+                    DiagnosticEvent::new("provider.universal.delete", "child_delete_failed")
+                        .field("app", "codex")
+                        .field("provider_id", codex_id),
+                );
             }
             if p.apps.gemini {
                 let gemini_id = format!("universal-gemini-{id}");
-                let _ = state.db.delete_provider("gemini", &gemini_id);
+                state.db.delete_provider("gemini", &gemini_id).error_on_err(
+                    DiagnosticEvent::new("provider.universal.delete", "child_delete_failed")
+                        .field("app", "gemini")
+                        .field("provider_id", gemini_id),
+                );
             }
         }
 
@@ -4684,7 +4701,11 @@ impl ProviderService {
         } else {
             // 如果禁用了 Claude，删除对应的子供应商
             let claude_id = format!("universal-claude-{id}");
-            let _ = state.db.delete_provider("claude", &claude_id);
+            state.db.delete_provider("claude", &claude_id).error_on_err(
+                DiagnosticEvent::new("provider.universal.sync", "stale_child_delete_failed")
+                    .field("app", "claude")
+                    .field("provider_id", claude_id),
+            );
         }
 
         // 同步到 Codex
@@ -4698,7 +4719,11 @@ impl ProviderService {
             state.db.save_provider("codex", &codex_provider)?;
         } else {
             let codex_id = format!("universal-codex-{id}");
-            let _ = state.db.delete_provider("codex", &codex_id);
+            state.db.delete_provider("codex", &codex_id).error_on_err(
+                DiagnosticEvent::new("provider.universal.sync", "stale_child_delete_failed")
+                    .field("app", "codex")
+                    .field("provider_id", codex_id),
+            );
         }
 
         // 同步到 Gemini
@@ -4712,7 +4737,11 @@ impl ProviderService {
             state.db.save_provider("gemini", &gemini_provider)?;
         } else {
             let gemini_id = format!("universal-gemini-{id}");
-            let _ = state.db.delete_provider("gemini", &gemini_id);
+            state.db.delete_provider("gemini", &gemini_id).error_on_err(
+                DiagnosticEvent::new("provider.universal.sync", "stale_child_delete_failed")
+                    .field("app", "gemini")
+                    .field("provider_id", gemini_id),
+            );
         }
 
         Ok(true)

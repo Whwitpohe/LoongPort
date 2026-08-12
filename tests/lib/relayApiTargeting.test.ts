@@ -34,6 +34,17 @@ describe("relayApi 的中转站定位参数", () => {
     invokeMock.mockResolvedValue(undefined);
   });
 
+  it("importSite 把用户输入原样交给合并导入命令", async () => {
+    await relayApi.importSite("https://relay.example/register?aff=abc");
+    expect(invokeMock).toHaveBeenCalledWith("relay_import_site", {
+      site: "https://relay.example/register?aff=abc",
+    });
+  });
+
+  it("不再暴露旧的 sub2api-only probeSite 入口", () => {
+    expect("probeSite" in relayApi).toBe(false);
+  });
+
   it("login 把 relayId 透传给后端", async () => {
     await relayApi.login(7);
     expect(invokeMock).toHaveBeenCalledWith("relay_login", {

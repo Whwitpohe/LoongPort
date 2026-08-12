@@ -12,7 +12,6 @@ import {
   Pencil,
   PencilLine,
   Play,
-  RefreshCw,
   Trash2,
   Undo2,
   Wallet,
@@ -48,6 +47,7 @@ import {
   calculateActualRateMultiplier,
   formatRateMultiplier,
 } from "./tierPricing";
+import { RefreshActionMenu } from "./RefreshActionMenu";
 
 /**
  * 一行中转站 + 可折叠的档位列表。
@@ -615,21 +615,11 @@ function RowStatus({
           provisioning ? HOVER_ACTIONS_PINNED : ROW_HOVER_ACTIONS,
         )}
       >
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 gap-1 px-2"
-          disabled={provisioning}
-          onClick={onProvision}
-          title={t("loongport.row.refetchGroups")}
-        >
-          {provisioning ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <RefreshCw className="h-3.5 w-3.5" />
-          )}
-        </Button>
+        <RefreshActionMenu
+          actionLabel={t("loongport.row.refetchGroups")}
+          loading={provisioning}
+          onAction={onProvision}
+        />
       </div>
     </div>
   );

@@ -48,7 +48,7 @@ use crate::error::AppError;
 /// LoongPort 自己的 schema 版本。加迁移时 +1。
 ///
 /// **与 `SCHEMA_VERSION`（上游那个）无关**，两者各自独立计数。
-pub(crate) const LOONGPORT_SCHEMA_VERSION: i32 = 7;
+pub(crate) const LOONGPORT_SCHEMA_VERSION: i32 = 9;
 
 /// 存版本号的表。**只有一行**（`id = 1`）。
 ///
@@ -153,7 +153,7 @@ pub(crate) fn apply(conn: &Connection) -> Result<(), AppError> {
             // v5 → v6：运行时自动验证全局设置与代理接管租约。
             5 => {
                 log::info!("LoongPort 数据迁移 v5 → v6（运行时验证设置与代理租约）");
-                crate::relay::model_verification::store::create_runtime_tables(conn)?;
+                crate::relay::model_verification::store::create_legacy_runtime_tables(conn)?;
                 set_version(conn, 6)?;
             }
             // v6 → v7：每个分组最近五条脱敏模型验证结果。
@@ -163,6 +163,19 @@ pub(crate) fn apply(conn: &Connection) -> Result<(), AppError> {
                 crate::relay::model_verification::history::create_table(conn)?;
                 set_version(conn, 7)?;
             }
+            // v7 → v8：移除被动运行时验证数据，但保留尚未恢复的代理租约。
+            // 租约只能在启动时成功恢复对应 app 的 live config 后删除。
+            7 => {
+                log::info!("LoongPort 数据迁移 v7 → v8（移除被动运行时验证数据）");
+                remove_legacy_runtime_verification_state(conn)?;
+                set_version(conn, 8)?;
+            }
+            // v8 → v9：记录 relay 的协议类型。历史行默认兼容为 sub2api。
+            8 => {
+                log::info!("LoongPort 数据迁移 v8 → v9（记录 relay backend_kind）");
+                add_relay_backend_kind_column(conn)?;
+                set_version(conn, 9)?;
+            }
             other => {
                 return Err(AppError::Database(format!(
                     "未知的 LoongPort 数据版本 {other}，无法迁移到 {LOONGPORT_SCHEMA_VERSION}"
@@ -170,6 +183,46 @@ pub(crate) fn apply(conn: &Connection) -> Result<(), AppError> {
             }
         }
         version = current_version(conn)?;
+    }
+
+    Ok(())
+}
+
+fn add_relay_backend_kind_column(conn: &Connection) -> Result<(), AppError> {
+    if !crate::Database::table_exists(conn, "loongport_relay")? {
+        return Ok(());
+    }
+
+    if crate::Database::has_column(conn, "loongport_relay", "backend_kind")? {
+        return Ok(());
+    }
+
+    conn.execute(
+        "ALTER TABLE loongport_relay
+         ADD COLUMN backend_kind TEXT NOT NULL DEFAULT 'sub2api'",
+        [],
+    )
+    .map_err(|e| AppError::Database(format!("给 loongport_relay 加 backend_kind 列失败: {e}")))?;
+    Ok(())
+}
+
+fn remove_legacy_runtime_verification_state(conn: &Connection) -> Result<(), AppError> {
+    if crate::Database::table_exists(conn, "model_verification_history")?
+        && crate::Database::table_exists(conn, "providers")?
+    {
+        conn.execute(
+            "DELETE FROM model_verification_history WHERE source = 'runtime'",
+            [],
+        )
+        .map_err(|error| AppError::Database(format!("删除旧运行时验证历史失败: {error}")))?;
+    }
+
+    if crate::Database::table_exists(conn, "model_verification_settings")? {
+        conn.execute(
+            "UPDATE model_verification_settings SET runtime_auto_enabled = 0",
+            [],
+        )
+        .map_err(|error| AppError::Database(format!("关闭旧自动验证设置失败: {error}")))?;
     }
 
     Ok(())
@@ -508,6 +561,7 @@ fn inherit_the_old_current_image_tier(conn: &Connection) -> Result<(), AppError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 
     fn mem() -> Connection {
         Connection::open_in_memory().expect("内存库")
@@ -528,6 +582,133 @@ mod tests {
             [],
         )
         .expect("造 v4 providers 表");
+    }
+
+    fn v8_relay_table(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE loongport_relay (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site_origin TEXT NOT NULL,
+                site_name TEXT NOT NULL DEFAULT '',
+                api_base_url TEXT NOT NULL DEFAULT '',
+                account_id INTEGER,
+                account_label TEXT NOT NULL DEFAULT '',
+                login_identifier TEXT NOT NULL DEFAULT '',
+                auth_token TEXT NOT NULL DEFAULT '',
+                refresh_token TEXT,
+                token_expires_at INTEGER,
+                sort_index INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE UNIQUE INDEX idx_loongport_relay_site_account
+            ON loongport_relay(site_origin, account_id);",
+        )
+        .expect("造 v8 relay 表");
+    }
+
+    fn relay_table_shape(conn: &Connection) -> Vec<(String, String, i64, Option<String>, i64)> {
+        conn.prepare("PRAGMA table_info('loongport_relay')")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn v8_to_v9_adds_backend_kind_and_defaults_existing_rows_to_sub2api() {
+        let conn = mem();
+        v8_relay_table(&conn);
+        conn.execute(
+            "INSERT INTO loongport_relay (
+                site_origin, site_name, api_base_url, account_id, account_label, auth_token
+             ) VALUES (
+                'https://legacy.example', 'Legacy', 'https://legacy.example', 7, '旧账号', 'tok'
+             )",
+            [],
+        )
+        .expect("插入 v8 relay 行");
+        ensure_version_table(&conn).expect("建版本表");
+        set_version(&conn, 8).expect("设为 v8");
+
+        apply(&conn).expect("迁移到 v9");
+
+        let row: (String, String, String) = conn
+            .query_row(
+                "SELECT site_origin, auth_token, backend_kind
+                 FROM loongport_relay WHERE account_id = 7",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("读取迁移后的 relay 行");
+        assert_eq!(
+            row,
+            (
+                "https://legacy.example".to_string(),
+                "tok".to_string(),
+                "sub2api".to_string(),
+            ),
+            "迁移必须保留旧行，并把历史 relay 明确归为 sub2api"
+        );
+        assert_eq!(current_version(&conn).unwrap(), 9);
+    }
+
+    #[test]
+    fn v9_migration_does_not_treat_schema_inspection_failure_as_missing_table() {
+        let conn = mem();
+        v8_relay_table(&conn);
+        conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+            AuthAction::Read {
+                table_name: "sqlite_master",
+                ..
+            } => Authorization::Deny,
+            _ => Authorization::Allow,
+        }));
+
+        let error = add_relay_backend_kind_column(&conn)
+            .expect_err("schema inspection failure must abort the migration")
+            .to_string();
+
+        assert!(
+            error.contains("读取表名失败") || error.contains("查询表名失败"),
+            "unexpected migration error: {error}"
+        );
+    }
+
+    #[test]
+    fn fresh_and_migrated_relay_tables_have_the_same_v9_shape() {
+        let migrated = mem();
+        v8_relay_table(&migrated);
+        ensure_version_table(&migrated).expect("建版本表");
+        set_version(&migrated, 8).expect("设为 v8");
+        apply(&migrated).expect("迁移到 v9");
+
+        let fresh = mem();
+        crate::relay::creds::create_table(&fresh).expect("按最新形态建表");
+
+        let migrated_shape = relay_table_shape(&migrated);
+        let fresh_shape = relay_table_shape(&fresh);
+        assert_eq!(
+            migrated_shape, fresh_shape,
+            "全新数据库与 v8 迁移后的 relay 表必须是同一种形态"
+        );
+        assert!(
+            fresh_shape.iter().any(|column| {
+                column.0 == "backend_kind"
+                    && column.1 == "TEXT"
+                    && column.2 == 1
+                    && column.3.as_deref() == Some("'sub2api'")
+            }),
+            "v9 relay 表必须包含 NOT NULL、默认 sub2api 的 backend_kind"
+        );
     }
 
     #[test]
@@ -590,7 +771,7 @@ mod tests {
         assert!(leases_table_exists, "v5 → v6 必须创建运行时验证租约表");
         assert!(history_table_exists, "v6 → v7 必须创建模型验证历史表");
         assert_eq!(user_version, 16, "LoongPort 迁移不许修改上游版本号");
-        assert_eq!(current_version(&conn).unwrap(), 7);
+        assert_eq!(current_version(&conn).unwrap(), LOONGPORT_SCHEMA_VERSION);
     }
 
     #[test]
@@ -611,7 +792,94 @@ mod tests {
             )
             .expect("读取默认设置");
         assert_eq!(setting, (0, 1));
-        assert_eq!(current_version(&conn).unwrap(), 7);
+        assert_eq!(current_version(&conn).unwrap(), LOONGPORT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v7_to_v8_removes_runtime_state_but_preserves_unresolved_proxy_leases() {
+        let conn = mem();
+        legacy_providers_table(&conn);
+        conn.execute(
+            "INSERT INTO providers (id, app_type) VALUES ('provider-a', 'codex')",
+            [],
+        )
+        .expect("插入旧档位");
+        conn.execute_batch(
+            "CREATE TABLE model_verification_history (
+                id INTEGER PRIMARY KEY,
+                provider_id TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                source TEXT NOT NULL CHECK (source IN ('active', 'runtime')),
+                verdict TEXT NOT NULL,
+                evidence_level TEXT NOT NULL,
+                facts_json TEXT NOT NULL,
+                rules_version INTEGER NOT NULL,
+                checked_at INTEGER NOT NULL,
+                FOREIGN KEY (provider_id, app_type) REFERENCES providers(id, app_type) ON DELETE CASCADE
+            );
+            CREATE INDEX idx_model_verification_history_scope_order
+            ON model_verification_history (provider_id, app_type, checked_at DESC, id DESC);
+            INSERT INTO model_verification_history (
+                provider_id, app_type, model, source, verdict, evidence_level,
+                facts_json, rules_version, checked_at
+            ) VALUES
+                ('provider-a', 'codex', 'gpt-test', 'active', 'match', 'strong', '[]', 1, 100),
+                ('provider-a', 'codex', 'gpt-test', 'runtime', 'mismatch', 'strong', '[]', 1, 200);",
+        )
+        .expect("创建并填充 v7 验证历史");
+        crate::relay::model_verification::store::create_legacy_runtime_tables(&conn)
+            .expect("创建旧运行时表");
+        conn.execute(
+            "UPDATE model_verification_settings SET runtime_auto_enabled = 1 WHERE singleton = 1",
+            [],
+        )
+        .expect("开启旧自动验证设置");
+        conn.execute(
+            "INSERT INTO model_verification_proxy_leases (app_type, acquired_at)
+             VALUES ('codex', 123)",
+            [],
+        )
+        .expect("插入未恢复的旧代理租约");
+        ensure_version_table(&conn).expect("建版本表");
+        set_version(&conn, 7).expect("设为 v7");
+
+        apply(&conn).expect("迁移到 v8");
+
+        let active_history: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM model_verification_history WHERE source = 'active'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("统计主动验证历史");
+        let runtime_history: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM model_verification_history WHERE source = 'runtime'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("统计运行时验证历史");
+        let runtime_auto_enabled: i64 = conn
+            .query_row(
+                "SELECT runtime_auto_enabled FROM model_verification_settings WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("读取旧自动验证设置");
+        let unresolved_lease: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM model_verification_proxy_leases WHERE app_type = 'codex'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("统计未恢复的代理租约");
+
+        assert_eq!(current_version(&conn).unwrap(), LOONGPORT_SCHEMA_VERSION);
+        assert_eq!(active_history, 1, "主动验证历史必须保留");
+        assert_eq!(runtime_history, 0, "被动运行时验证历史必须删除");
+        assert_eq!(runtime_auto_enabled, 0, "旧自动验证设置必须关闭");
+        assert_eq!(unresolved_lease, 1, "未恢复的代理租约必须留给启动清理");
     }
 
     #[test]
