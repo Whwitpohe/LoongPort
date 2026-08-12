@@ -3087,7 +3087,8 @@
       "removeBlockedByCurrent": "このアカウントの接続プロファイルが使用中です。別のプロファイルに切り替えてから削除してください",
       "removeConfirmTitle": "このアカウントを削除しますか？",
       "removeConfirmMessage": "「{{label}}」のログイン情報と {{count}} 件の接続プロファイルを削除します。中継サービスの残高は保持され、後から再ログインできます。",
-      "removeConfirmMessageNeverLoggedIn": "「{{label}}」と {{count}} 件の接続プロファイルを削除します。後からこのアカウントを再度追加できます。"
+      "removeConfirmMessageNeverLoggedIn": "「{{label}}」と {{count}} 件の接続プロファイルを削除します。後からこのアカウントを再度追加できます。",
+      "currentOperator": "現在の事業者"
     },
     "tier": {
       "rateUnknown": "倍率不明",
@@ -3109,7 +3110,13 @@
       "userEdited": "手動管理",
       "userEditedHint": "この接続プロファイルには手動変更が含まれています。グループを更新しても API キーだけが更新され、その他の設定は保持されます。クリックするとデフォルト設定に戻せます。",
       "editMissing": "この接続プロファイルが見つかりません。接続プロファイルを作成し直してください。",
-      "editCurrentNote": "これは使用中の接続プロファイルです。変更が反映されない場合は、ChatGPT デスクトップアプリを終了して再度開いてください。起動中の ChatGPT が Codex の設定を上書きすることがあります。"
+      "editCurrentNote": "これは使用中の接続プロファイルです。変更が反映されない場合は、ChatGPT デスクトップアプリを終了して再度開いてください。起動中の ChatGPT が Codex の設定を上書きすることがあります。",
+      "currentConfig": "現在の設定",
+      "actualRate": "実質 {{value}} 倍",
+      "actualRateHint": "実質倍率 = 現在の請求倍率 ÷ チャージ反映倍率（手数料を含まない）",
+      "groupSelectHint": "この設定に紐づけるグループを選択",
+      "groupRebound": "「{{name}}」に紐づけ直しました",
+      "refreshGroupsFirst": "先に接続プロファイルとキーを更新してください"
     },
     "stats": {
       "title": "LoongPort の改善に協力",
@@ -3231,7 +3238,8 @@
         "empty": "検証結果はまだありません",
         "error": "検証結果を読み込めませんでした。もう一度お試しください。",
         "source": {
-          "active": "現在の検証"
+          "active": "現在の検証",
+          "runtime": "使用時の検証"
         }
       },
       "tierVerdict": {
@@ -3283,6 +3291,39 @@
         "modelUnavailable": "このモデルは利用できません。別のモデルを選択してください。",
         "cancelled": "検証を停止しました。",
         "invalidResponse": "プロバイダーの応答を検証できませんでした。しばらくしてから再試行するか、手動で確認してください。"
+      },
+      "globalScopeNote": "設定済みのすべてのモデルに自動検証を適用します。",
+      "runtime": {
+        "autoLabel": "実行時の自動検証（グローバル）",
+        "autoHelp": "すべての中継グループとモデルに適用されます。LoongPort はルーティングサービス経由で Codex と Claude の実際の応答を監視します。追加の検証リクエストは送信せず、会話内容も保存しません。",
+        "loadError": "実行時検証の状態を読み込めませんでした。",
+        "anomalyToast": "{{app}} のモデル {{model}} で異常を検出しました。モデル検証を開いて確認してください。",
+        "apps": {
+          "codex": "Codex",
+          "claude": "Claude"
+        },
+        "status": {
+          "active": "有効",
+          "waiting": "待機中",
+          "error": "エラー"
+        }
+      }
+    },
+    "health": {
+      "title": "チャネル稼働状況",
+      "autoRefresh": "自動更新",
+      "group": "グループ：{{name}}",
+      "responseLatency": "応答時間",
+      "ping": "Ping",
+      "availability7d": "7 日間稼働率",
+      "recentChecks": "直近 {{count}} 回のチェック",
+      "newestRight": "右側が最新",
+      "status": {
+        "operational": "正常",
+        "degraded": "性能低下",
+        "failed": "障害",
+        "error": "エラー",
+        "unknown": "不明"
       }
     }
   }

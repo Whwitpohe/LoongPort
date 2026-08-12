@@ -3087,7 +3087,8 @@
       "removeBlockedByCurrent": "A connection profile from this account is in use. Switch to another profile before deleting it",
       "removeConfirmTitle": "Delete this account?",
       "removeConfirmMessage": "This deletes the sign-in session for “{{label}}” and its {{count}} connection profiles. Your balance remains with the relay service, and you can sign in again later.",
-      "removeConfirmMessageNeverLoggedIn": "This deletes “{{label}}” and its {{count}} connection profiles. You can add the account again later."
+      "removeConfirmMessageNeverLoggedIn": "This deletes “{{label}}” and its {{count}} connection profiles. You can add the account again later.",
+      "currentOperator": "Current provider"
     },
     "tier": {
       "rateUnknown": "Rate unknown",
@@ -3109,7 +3110,13 @@
       "userEdited": "Manually maintained",
       "userEditedHint": "This connection profile contains manual changes. Group updates change only the API key and preserve all other settings. Select to restore the defaults.",
       "editMissing": "This connection profile could not be found. Create the connection profiles again.",
-      "editCurrentNote": "This connection profile is in use. If your changes do not take effect, quit and reopen the ChatGPT desktop app; a running ChatGPT app may overwrite the Codex configuration."
+      "editCurrentNote": "This connection profile is in use. If your changes do not take effect, quit and reopen the ChatGPT desktop app; a running ChatGPT app may overwrite the Codex configuration.",
+      "currentConfig": "Current config",
+      "actualRate": "Actual {{value}}x",
+      "actualRateHint": "Actual rate = current billing rate / balance credit multiplier (fees excluded)",
+      "groupSelectHint": "Choose the group bound to this config",
+      "groupRebound": "Rebound to “{{name}}”",
+      "refreshGroupsFirst": "Update connection profiles first"
     },
     "stats": {
       "title": "Help improve LoongPort",
@@ -3231,7 +3238,8 @@
         "empty": "No verification results yet",
         "error": "Could not load verification results. Try again.",
         "source": {
-          "active": "Current verification"
+          "active": "Current verification",
+          "runtime": "Runtime check"
         }
       },
       "tierVerdict": {
@@ -3283,6 +3291,39 @@
         "modelUnavailable": "This model is unavailable. Select another model.",
         "cancelled": "Verification stopped.",
         "invalidResponse": "The provider's response could not be verified. Try again later or review it manually."
+      },
+      "globalScopeNote": "Apply automatic verification to all configured models.",
+      "runtime": {
+        "autoLabel": "Automatic runtime verification (global)",
+        "autoHelp": "Applies to every relay group and model. LoongPort observes actual Codex and Claude responses through its routing service. It sends no additional verification requests and stores no conversation content.",
+        "loadError": "Could not load runtime verification status.",
+        "anomalyToast": "An anomaly was detected for {{app}} model {{model}}. Open Verify model for details.",
+        "apps": {
+          "codex": "Codex",
+          "claude": "Claude"
+        },
+        "status": {
+          "active": "Active",
+          "waiting": "Waiting",
+          "error": "Error"
+        }
+      }
+    },
+    "health": {
+      "title": "Channel health",
+      "autoRefresh": "Auto-updating",
+      "group": "Group: {{name}}",
+      "responseLatency": "Response",
+      "ping": "Ping",
+      "availability7d": "7-day uptime",
+      "recentChecks": "Latest {{count}} checks",
+      "newestRight": "Newest on right",
+      "status": {
+        "operational": "Operational",
+        "degraded": "Degraded",
+        "failed": "Failed",
+        "error": "Error",
+        "unknown": "Unknown"
       }
     }
   }

@@ -3088,7 +3088,8 @@
       "removeBlockedByCurrent": "此帳號有連線設定檔正在使用，請先切換至其他連線設定檔",
       "removeConfirmTitle": "刪除此帳號？",
       "removeConfirmMessage": "將刪除「{{label}}」的登入資訊及其 {{count}} 個連線設定檔。中轉站內的餘額不會受到影響；之後可重新登入繼續使用。",
-      "removeConfirmMessageNeverLoggedIn": "將刪除「{{label}}」及其 {{count}} 個連線設定檔。之後可重新新增此帳號。"
+      "removeConfirmMessageNeverLoggedIn": "將刪除「{{label}}」及其 {{count}} 個連線設定檔。之後可重新新增此帳號。",
+      "currentOperator": "目前營運商"
     },
     "tier": {
       "rateUnknown": "倍率未知",
@@ -3110,7 +3111,13 @@
       "userEdited": "手動維護",
       "userEditedHint": "此連線設定檔包含手動修改。更新群組時只會更新 API 金鑰，不會覆蓋其他內容。點一下可還原預設設定。",
       "editMissing": "找不到此連線設定檔。請重新建立連線設定檔。",
-      "editCurrentNote": "這是正在使用的連線設定檔。若修改未生效，請結束並重新開啟 ChatGPT 桌面版；執行中的 ChatGPT 可能會覆蓋 Codex 設定。"
+      "editCurrentNote": "這是正在使用的連線設定檔。若修改未生效，請結束並重新開啟 ChatGPT 桌面版；執行中的 ChatGPT 可能會覆蓋 Codex 設定。",
+      "currentConfig": "目前設定",
+      "actualRate": "實際 {{value}} 倍",
+      "actualRateHint": "實際倍率 = 目前扣費倍率 ÷ 儲值到帳比例（不含手續費）",
+      "groupSelectHint": "選擇這條設定綁定的分組",
+      "groupRebound": "已改綁到「{{name}}」",
+      "refreshGroupsFirst": "請先更新連線設定檔與金鑰"
     },
     "stats": {
       "title": "協助改進 LoongPort",
@@ -3232,7 +3239,8 @@
         "empty": "尚無驗證記錄",
         "error": "無法載入驗證記錄。請再試一次。",
         "source": {
-          "active": "目前驗證"
+          "active": "目前驗證",
+          "runtime": "使用時檢測"
         }
       },
       "tierVerdict": {
@@ -3284,6 +3292,39 @@
         "modelUnavailable": "此模型無法使用。請選擇其他模型。",
         "cancelled": "驗證已停止。",
         "invalidResponse": "服務商傳回的回應無法驗證。請稍後再試或人工複核。"
+      },
+      "globalScopeNote": "對所有已設定模型啟用自動驗證。",
+      "runtime": {
+        "autoLabel": "執行時自動檢測（全域）",
+        "autoHelp": "對所有中轉群組和模型生效。LoongPort 會透過路由服務觀察 Codex 和 Claude 的實際回應；不會額外傳送檢測請求，也不會儲存對話內容。",
+        "loadError": "執行時檢測狀態載入失敗",
+        "anomalyToast": "{{app}} 的模型 {{model}} 檢測到異常，請開啟模型驗證查看。",
+        "apps": {
+          "codex": "Codex",
+          "claude": "Claude"
+        },
+        "status": {
+          "active": "已啟用",
+          "waiting": "等待中",
+          "error": "錯誤"
+        }
+      }
+    },
+    "health": {
+      "title": "渠道健康",
+      "autoRefresh": "自動更新",
+      "group": "群組：{{name}}",
+      "responseLatency": "請求延遲",
+      "ping": "Ping",
+      "availability7d": "7 天可用率",
+      "recentChecks": "最近 {{count}} 次檢測",
+      "newestRight": "右側最新",
+      "status": {
+        "operational": "正常",
+        "degraded": "效能下降",
+        "failed": "故障",
+        "error": "異常",
+        "unknown": "未知"
       }
     }
   }

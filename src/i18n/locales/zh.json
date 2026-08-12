@@ -3087,7 +3087,8 @@
       "removeBlockedByCurrent": "此账号有接入配置正在使用，请先切换到其他接入配置",
       "removeConfirmTitle": "删除此账号？",
       "removeConfirmMessage": "将删除「{{label}}」的登录信息及其 {{count}} 个接入配置。中转站中的余额不会受影响；之后可重新登录恢复使用。",
-      "removeConfirmMessageNeverLoggedIn": "将删除「{{label}}」及其 {{count}} 个接入配置。之后可重新添加此账号。"
+      "removeConfirmMessageNeverLoggedIn": "将删除「{{label}}」及其 {{count}} 个接入配置。之后可重新添加此账号。",
+      "currentOperator": "当前运营商"
     },
     "tier": {
       "rateUnknown": "倍率未知",
@@ -3109,7 +3110,13 @@
       "userEdited": "手动维护",
       "userEditedHint": "此接入配置包含手动修改。更新分组时只会更新 API 密钥，不会覆盖其他内容。点击可恢复默认配置。",
       "editMissing": "未找到此接入配置。请重新创建接入配置。",
-      "editCurrentNote": "这是正在使用的接入配置。若修改未生效，请退出并重新打开 ChatGPT 桌面版；运行中的 ChatGPT 可能会覆盖 Codex 配置。"
+      "editCurrentNote": "这是正在使用的接入配置。若修改未生效，请退出并重新打开 ChatGPT 桌面版；运行中的 ChatGPT 可能会覆盖 Codex 配置。",
+      "currentConfig": "当前配置",
+      "actualRate": "实际 {{value}} 倍",
+      "actualRateHint": "实际倍率 = 当前扣费倍率 ÷ 充值到账比例（不含手续费）",
+      "groupSelectHint": "选择这条配置绑定的分组",
+      "groupRebound": "已改绑到「{{name}}」",
+      "refreshGroupsFirst": "请先更新接入配置与密钥"
     },
     "stats": {
       "title": "帮助改进 LoongPort",
@@ -3231,7 +3238,8 @@
         "empty": "暂无验证记录",
         "error": "无法加载验证记录。请重试。",
         "source": {
-          "active": "当前验证"
+          "active": "当前验证",
+          "runtime": "使用时检测"
         }
       },
       "tierVerdict": {
@@ -3283,6 +3291,39 @@
         "modelUnavailable": "此模型不可用。请选择其他模型。",
         "cancelled": "验证已停止。",
         "invalidResponse": "服务商返回的响应无法验证。请稍后重试或人工复核。"
+      },
+      "globalScopeNote": "对所有已配置模型启用自动验证。",
+      "runtime": {
+        "autoLabel": "运行时自动检测（全局）",
+        "autoHelp": "对所有中转分组和模型生效。LoongPort 会通过路由服务观察 Codex 和 Claude 的实际响应；不会额外发送检测请求，也不会保存对话内容。",
+        "loadError": "运行时检测状态加载失败",
+        "anomalyToast": "{{app}} 的模型 {{model}} 检测到异常，请打开模型验证查看。",
+        "apps": {
+          "codex": "Codex",
+          "claude": "Claude"
+        },
+        "status": {
+          "active": "已启用",
+          "waiting": "等待中",
+          "error": "异常"
+        }
+      }
+    },
+    "health": {
+      "title": "渠道健康",
+      "autoRefresh": "自动更新",
+      "group": "分组：{{name}}",
+      "responseLatency": "请求延迟",
+      "ping": "Ping",
+      "availability7d": "7 天可用率",
+      "recentChecks": "最近 {{count}} 次检测",
+      "newestRight": "右侧最新",
+      "status": {
+        "operational": "正常",
+        "degraded": "性能下降",
+        "failed": "故障",
+        "error": "异常",
+        "unknown": "未知"
       }
     }
   }

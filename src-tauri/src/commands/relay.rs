@@ -1581,24 +1581,29 @@ async fn load_validated_relay<R: tauri::Runtime>(
 
     match discovery::probe_site(&op.site_origin).await {
         Ok(detected) if detected.backend_kind == op.backend_kind => Ok(op),
-        Ok(_) => {
-            let state = app_handle.state::<AppState>();
-            with_conn(&state, |conn| creds::clear_credentials(conn, relay_id))?;
-            Err(AppError::Config(
-                "站点协议已变化，已清除旧凭据，请重新添加或登录".into(),
-            ))
-        }
+        Ok(_) => Err(AppError::Config(
+            "站点当前返回了与已保存账号不同的中转协议；为避免把凭据发给错误后端，已停止操作，但保留了原凭据".into(),
+        )),
         Err(error) if error.kind == discovery::DiscoveryErrorKind::Transport => Err(
             AppError::Config(format!("连接站点失败，未改动已有凭据：{}", error.message)),
         ),
-        Err(error) => {
-            let state = app_handle.state::<AppState>();
-            with_conn(&state, |conn| creds::clear_credentials(conn, relay_id))?;
-            Err(AppError::Config(format!(
-                "站点协议无法安全识别，已清除旧凭据：{}",
+        Err(error) if error.kind == discovery::DiscoveryErrorKind::UnsupportedSite => {
+            // 已保存的账号在旧版中已经通过实际登录与鉴权接口验证过。公开探测端点可能因
+            // 站点升级、Cloudflare 或响应字段裁剪而暂时不再匹配严格 detector；这并不
+            // 证明已保存的后端类型或凭据失效。继续按持久化类型请求，真正的鉴权失败由
+            // RuntimeBackend 的受保护接口判定，且只有明确 401 才会触发清凭据。
+            log::warn!(
+                "站点 {} 的公开协议探测未识别，沿用已保存后端 {:?}：{}",
+                op.site_origin,
+                op.backend_kind,
                 error.message
-            )))
+            );
+            Ok(op)
         }
+        Err(error) => Err(AppError::Config(format!(
+            "站点协议无法安全识别，未改动已有凭据：{}",
+            error.message
+        ))),
     }
 }
 
@@ -1889,7 +1894,9 @@ async fn rebind_tier_impl(
 ) -> Result<TierInfo, AppError> {
     let op = usable_relay(app_handle, relay_id).await?;
     if !matches!(op.backend_kind, discovery::BackendKind::Sub2Api) {
-        return Err(AppError::Config("NewAPI 接入配置暂不支持手动改绑分组".into()));
+        return Err(AppError::Config(
+            "NewAPI 接入配置暂不支持手动改绑分组".into(),
+        ));
     }
     let client = api::Client::new(&op.site_origin, &op.auth_token, op.account_id)?;
     let mut result = provision::provision(&client).await?;
@@ -1917,7 +1924,9 @@ async fn rebind_tier_impl(
         .into_iter()
         .find(|key| key.key == current_key && key.is_usable())
         .ok_or_else(|| AppError::Config("远端已经找不到这条配置正在使用的密钥".into()))?;
-    let updated_key = client.update_key_group(remote_key.id, tier.group_id).await?;
+    let updated_key = client
+        .update_key_group(remote_key.id, tier.group_id)
+        .await?;
     let display_name = provision::provider_display_name(&op.site_name, &tier.group_name);
     let mut settings_config = existing.settings_config.clone();
     if !provision::patch_api_key(&mut settings_config, &app_type, &updated_key.key)
@@ -3218,7 +3227,10 @@ fn list_tiers_impl(state: &AppState, app_type: AppType) -> Result<Vec<OwnedTier>
             tier: TierInfo {
                 provider_id: p.id.clone(),
                 group_id: p.meta.as_ref().and_then(|meta| meta.loongport_group_id),
-                key_name: p.meta.as_ref().and_then(|meta| meta.loongport_api_key_name.clone()),
+                key_name: p
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.loongport_api_key_name.clone()),
                 app_id: app_id.clone(),
                 // 倍率不在本地存 —— 它是服务端的定价，可能已经变了。要看倍率就重新
                 // provision，那时会从服务端拿到当前值。这里返回 None 让 UI 知道
@@ -4847,7 +4859,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn saved_relay_validation_clears_credentials_on_detected_backend_mismatch() {
+    async fn saved_relay_validation_preserves_credentials_on_detected_backend_mismatch() {
         let (origin, server) = spawn_discovery_server(Some(sub2api_discovery_body()), None).await;
         let (app, relay_id) = saved_relay_app(&origin, discovery::BackendKind::NewApi);
 
@@ -4857,13 +4869,13 @@ mod tests {
 
         assert!(error.to_string().contains("协议"), "{error}");
         let relay = relay_credentials(&app, relay_id);
-        assert!(relay.auth_token.is_empty());
-        assert!(relay.refresh_token.is_none());
+        assert_eq!(relay.auth_token, "saved-access-token");
+        assert_eq!(relay.refresh_token.as_deref(), Some("saved-refresh-token"));
         server.abort();
     }
 
     #[tokio::test]
-    async fn saved_relay_validation_clears_credentials_on_unsupported_or_conflicting_protocol() {
+    async fn saved_relay_validation_falls_back_on_unsupported_and_preserves_on_conflict() {
         let cases = [
             (
                 Some(serde_json::json!({ "unknown": "sub" })),
@@ -4881,13 +4893,20 @@ mod tests {
             let (origin, server) = spawn_discovery_server(sub2api_body, newapi_body).await;
             let (app, relay_id) = saved_relay_app(&origin, discovery::BackendKind::NewApi);
 
-            usable_relay(app.handle(), relay_id)
-                .await
-                .expect_err(case_name);
+            let result = usable_relay(app.handle(), relay_id).await;
+            if case_name == "unsupported" {
+                result.expect("unknown public fingerprint should fall back to the saved backend");
+            } else {
+                result.expect_err("conflicting fingerprints must stop runtime dispatch");
+            }
 
             let relay = relay_credentials(&app, relay_id);
-            assert!(relay.auth_token.is_empty(), "{case_name}");
-            assert!(relay.refresh_token.is_none(), "{case_name}");
+            assert_eq!(relay.auth_token, "saved-access-token", "{case_name}");
+            assert_eq!(
+                relay.refresh_token.as_deref(),
+                Some("saved-refresh-token"),
+                "{case_name}"
+            );
             server.abort();
         }
     }

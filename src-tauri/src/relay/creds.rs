@@ -158,7 +158,13 @@ pub struct Relay {
 
 /// Accept both Unix seconds and legacy browser millisecond timestamps.
 pub fn normalize_token_expires_at(value: Option<i64>) -> Option<i64> {
-    value.map(|value| if value > 100_000_000_000 { value / 1_000 } else { value })
+    value.map(|value| {
+        if value > 100_000_000_000 {
+            value / 1_000
+        } else {
+            value
+        }
+    })
 }
 
 impl Relay {
